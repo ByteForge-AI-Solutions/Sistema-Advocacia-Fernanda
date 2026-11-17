@@ -110,9 +110,10 @@ export async function buscarPerfilPorEmail(email: string): Promise<ResultadoPerf
   const erros = validarPerfil(data);
   if (erros.length > 0 || !isCargo(data.cargo)) {
     console.error("Cadastro de advogado inconsistente:", erros);
+    // Mostra o motivo exato: o CRM é interno e isso poupa a administração de investigar no banco.
     return {
       ok: false,
-      motivo: "Seu cadastro está incompleto ou inconsistente. Fale com a administração.",
+      motivo: `Seu cadastro está inconsistente: ${erros.join(" ")} Fale com a administração.`,
     };
   }
 
