@@ -1,29 +1,29 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { CalendarDays, CalendarX, CircleAlert, Clock, LoaderCircle, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CalendarDays, CalendarX, CircleAlert, Clock, LoaderCircle, Pencil, Plus, RefreshCw, UserRound } from "lucide-react";
+import { ReuniaoModal } from "@/components/agenda/reuniao-modal";
 import { useAuth } from "@/components/auth-provider";
 import { AreaBadge, PRIORIDADE_ESTILO, PrioridadeBadge, SupervisaoBadge } from "@/components/fichas/badges";
+import { Toast } from "@/components/toast";
+import type { MembroEquipe } from "@/lib/advogados";
 import {
   ErroAgenda,
   buscarAgenda,
   eventoCancelado,
   rotuloStatusEvento,
+  terminoDoEvento,
   type EventoAgenda,
 } from "@/lib/agenda";
+import { chaveDia, fmtHora } from "@/lib/datas";
 import { paraPrioridade } from "@/lib/fichas";
 
 type Periodo = "proximos" | "todos";
+type EstadoModal = { modo: "novo" } | { modo: "editar"; evento: EventoAgenda } | null;
 
-const fmtHora = new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" });
 const fmtDia = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" });
 const fmtDiaAno = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 const fmtDataCurta = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit" });
-
-/** Chave do dia no fuso local (YYYY-MM-DD), para agrupar eventos. */
-function chaveDia(d: Date) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 
 function rotuloDia(d: Date, agora: Date) {
   const amanha = new Date(agora);
@@ -42,11 +42,15 @@ function duracao(inicio: Date, fim: Date) {
   return h === 0 ? `${m} min` : m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, "0")}`;
 }
 
-function terminoDoEvento(e: EventoAgenda) {
-  return new Date(e.data_hora_fim ?? e.data_hora_inicio);
-}
-
-function EventoCard({ evento, agora }: { evento: EventoAgenda; agora: Date }) {
+function EventoCard({
+  evento,
+  agora,
+  onEditar,
+}: {
+  evento: EventoAgenda;
+  agora: Date;
+  onEditar: () => void;
+}) {
   const prioridade = paraPrioridade(evento.prioridade);
   const alta = prioridade === "alta";
   const cancelado = eventoCancelado(evento.status);
@@ -59,10 +63,21 @@ function EventoCard({ evento, agora }: { evento: EventoAgenda; agora: Date }) {
 
   return (
     <article
-      className={`relative flex h-full flex-col overflow-hidden rounded-xl border bg-white p-5 pl-6 shadow-sm transition hover:shadow-md ${
+      className={`group relative flex h-full flex-col overflow-hidden rounded-xl border bg-white p-5 pl-6 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-navy-600 ${
         alta && !cancelado ? "border-red-300 ring-1 ring-red-200" : "border-slate-200"
-      } ${passado || cancelado ? "opacity-70" : ""}`}
+      } ${passado || cancelado ? "opacity-70 hover:opacity-100" : ""}`}
     >
+      {/* Botão sobre o cartão inteiro: clique em qualquer lugar abre a edição */}
+      <button
+        type="button"
+        onClick={onEditar}
+        aria-label={`Editar reunião: ${evento.titulo_evento}`}
+        className="absolute inset-0 z-10 cursor-pointer outline-none"
+      />
+      <Pencil
+        className="absolute right-3 bottom-3 size-3.5 text-slate-300 opacity-0 transition group-hover:opacity-100 group-has-focus-visible:opacity-100"
+        aria-hidden
+      />
       <span
         className={`absolute inset-y-0 left-0 w-1 ${prioridade ? PRIORIDADE_ESTILO[prioridade].faixa : "bg-slate-300"}`}
         aria-hidden
@@ -97,6 +112,13 @@ function EventoCard({ evento, agora }: { evento: EventoAgenda; agora: Date }) {
         {evento.titulo_evento}
       </h3>
 
+      {evento.ficha && (
+        <p className="mt-1.5 flex items-center gap-1.5 text-sm text-slate-600">
+          <UserRound className="size-3.5 shrink-0 text-slate-400" aria-hidden />
+          <span className="truncate">{evento.ficha.nome_cliente}</span>
+        </p>
+      )}
+
       {evento.estagiario && (
         <div className="mt-2">
           <SupervisaoBadge nome={evento.estagiario.nome} />
@@ -122,6 +144,10 @@ export default function AgendaPage() {
   // O layout de /painel só renderiza esta página com o perfil já carregado.
   const { perfil } = useAuth();
   const [eventos, setEventos] = useState<EventoAgenda[]>([]);
+  const [responsaveis, setResponsaveis] = useState<MembroEquipe[]>([]);
+  const [modal, setModal] = useState<EstadoModal>(null);
+  const [sucesso, setSucesso] = useState<string | null>(null);
+  const fecharToast = useCallback(() => setSucesso(null), []);
   const [agora, setAgora] = useState<Date | null>(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
@@ -134,7 +160,8 @@ export default function AgendaPage() {
     buscarAgenda(perfil).then(
       (dados) => {
         if (!atual) return;
-        setEventos(dados);
+        setEventos(dados.eventos);
+        setResponsaveis(dados.responsaveis);
         setAgora(new Date());
         setErro(null);
         setCarregando(false);
@@ -143,9 +170,11 @@ export default function AgendaPage() {
         if (!atual) return;
         console.error("Erro ao carregar agenda:", e);
         setErro(
-          e instanceof ErroAgenda && e.tabelaAusente
-            ? "A tabela agenda_advogados ainda não existe no Supabase (ou não está exposta na API)."
-            : "Não foi possível carregar a agenda. Verifique sua conexão e tente novamente.",
+          e instanceof ErroAgenda && e.motivo === "tabela_ausente"
+            ? "A tabela agenda_advogados ainda não existe no Supabase. Rode as seções 5, 6 e 7 do schema.sql."
+            : e instanceof ErroAgenda && e.motivo === "banco_desatualizado"
+              ? "O banco ainda não tem a coluna ficha_id da agenda. Rode a seção 7 do schema.sql."
+              : "Não foi possível carregar a agenda. Verifique sua conexão e tente novamente.",
         );
         setCarregando(false);
       },
@@ -159,6 +188,14 @@ export default function AgendaPage() {
     setCarregando(true);
     setVersao((v) => v + 1);
   }
+
+  function aoSalvar(mensagem: string) {
+    setModal(null);
+    setSucesso(mensagem);
+    atualizar();
+  }
+
+  const podeAgendar = !carregando && !erro && responsaveis.length > 0;
 
   const proximos = useMemo(
     () => (agora ? eventos.filter((e) => terminoDoEvento(e) >= agora) : []),
@@ -229,6 +266,15 @@ export default function AgendaPage() {
           >
             <RefreshCw className={`size-4 ${carregando ? "animate-spin" : ""}`} aria-hidden />
           </button>
+          <button
+            type="button"
+            onClick={() => setModal({ modo: "novo" })}
+            disabled={!podeAgendar}
+            className="inline-flex items-center gap-2 rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-navy-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Plus className="size-4" aria-hidden />
+            Nova reunião
+          </button>
         </div>
       </div>
 
@@ -261,6 +307,16 @@ export default function AgendaPage() {
                 ? "Os compromissos anteriores continuam disponíveis em “Todos”."
                 : "As reuniões agendadas aparecerão aqui."}
             </p>
+            {podeAgendar && (
+              <button
+                type="button"
+                onClick={() => setModal({ modo: "novo" })}
+                className="mt-5 inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 transition hover:bg-navy-50"
+              >
+                <Plus className="size-4" aria-hidden />
+                Agendar reunião
+              </button>
+            )}
           </div>
         ) : (
           <div className="space-y-10">
@@ -280,7 +336,11 @@ export default function AgendaPage() {
                   <ul className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                     {itens.map((evento) => (
                       <li key={evento.id}>
-                        <EventoCard evento={evento} agora={agora} />
+                        <EventoCard
+                          evento={evento}
+                          agora={agora}
+                          onEditar={() => setModal({ modo: "editar", evento })}
+                        />
                       </li>
                     ))}
                   </ul>
@@ -290,6 +350,18 @@ export default function AgendaPage() {
           </div>
         )}
       </section>
+
+      {modal && perfil && (
+        <ReuniaoModal
+          perfil={perfil}
+          responsaveis={responsaveis}
+          eventos={eventos}
+          evento={modal.modo === "editar" ? modal.evento : undefined}
+          onFechar={() => setModal(null)}
+          onSalvo={aoSalvar}
+        />
+      )}
+      {sucesso && <Toast mensagem={sucesso} onFechar={fecharToast} />}
     </main>
   );
 }

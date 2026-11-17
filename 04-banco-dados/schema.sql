@@ -220,3 +220,110 @@ DROP POLICY IF EXISTS "agenda: exclusão pela equipe responsável" ON public.age
 CREATE POLICY "agenda: exclusão pela equipe responsável" ON public.agenda_advogados
   FOR DELETE TO authenticated
   USING (public.pode_acessar_ficha(advogado_id));
+
+
+-- =====================================================================
+-- 7. FORMULÁRIO DE REUNIÕES + DISPONIBILIDADE DOS ADVOGADOS
+-- ---------------------------------------------------------------------
+-- Depende das seções 5 e 6. Idempotente: rode as seções 5, 6 e 7 juntas.
+-- =====================================================================
+
+-- 7.1 Vínculo opcional da reunião com a ficha do cliente.
+-- ON DELETE SET NULL: se a ficha for apagada, a reunião continua na agenda.
+ALTER TABLE public.agenda_advogados
+  ADD COLUMN IF NOT EXISTS ficha_id UUID REFERENCES public.fichas_clientes(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_agenda_ficha_id ON public.agenda_advogados (ficha_id);
+
+-- 7.2 Só dá para vincular uma ficha que o próprio usuário consegue ver.
+-- O SELECT abaixo roda com as permissões de quem salva, então o RLS de
+-- fichas_clientes vale aqui. A checagem só acontece quando a ficha é
+-- definida ou trocada: um estagiário consegue alterar o status de uma
+-- reunião que o titular vinculou a uma ficha que ele mesmo não vê.
+-- O bot (service_role) ignora o RLS e passa direto.
+CREATE OR REPLACE FUNCTION public.agenda_valida_ficha()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+BEGIN
+  IF NEW.ficha_id IS NOT NULL
+     AND (TG_OP = 'INSERT' OR NEW.ficha_id IS DISTINCT FROM OLD.ficha_id)
+     AND NOT EXISTS (SELECT 1 FROM public.fichas_clientes f WHERE f.id = NEW.ficha_id)
+  THEN
+    RAISE EXCEPTION 'Ficha vinculada não encontrada ou sem permissão de acesso.'
+      USING ERRCODE = '42501';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_agenda_valida_ficha ON public.agenda_advogados;
+CREATE TRIGGER trg_agenda_valida_ficha
+  BEFORE INSERT OR UPDATE ON public.agenda_advogados
+  FOR EACH ROW EXECUTE FUNCTION public.agenda_valida_ficha();
+
+-- 7.3 ID do advogado logado (ativo), usado nas regras de "somente o próprio".
+CREATE OR REPLACE FUNCTION public.advogado_atual_id()
+RETURNS uuid
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT a.id
+  FROM public.advogados a
+  WHERE lower(a.email) = lower(auth.jwt() ->> 'email')
+    AND a.ativo IS TRUE
+  LIMIT 1;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.advogado_atual_id() FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.advogado_atual_id() TO authenticated;
+
+-- 7.4 Grade de atendimento: uma linha por advogado.
+-- Horários sem fuso: representam o horário local do escritório (Brasília).
+-- dias_semana usa a numeração do Postgres/JS: 0 = domingo ... 6 = sábado.
+CREATE TABLE IF NOT EXISTS public.disponibilidade_advogados (
+  advogado_id         UUID        PRIMARY KEY REFERENCES public.advogados(id) ON DELETE CASCADE,
+  dias_semana         SMALLINT[]  NOT NULL DEFAULT '{1,2,3,4,5}',
+  hora_inicio         TIME        NOT NULL DEFAULT '09:00',
+  hora_fim            TIME        NOT NULL DEFAULT '18:00',
+  duracao_reuniao_min INTEGER     NOT NULL DEFAULT 60,
+  max_reunioes_dia    INTEGER     NOT NULL DEFAULT 6,
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT disp_dias_validos   CHECK (dias_semana <@ ARRAY[0,1,2,3,4,5,6]::SMALLINT[]),
+  CONSTRAINT disp_horario_valido CHECK (hora_fim > hora_inicio),
+  CONSTRAINT disp_duracao_valida CHECK (duracao_reuniao_min BETWEEN 10 AND 480),
+  CONSTRAINT disp_max_valido     CHECK (max_reunioes_dia BETWEEN 1 AND 30)
+);
+
+REVOKE ALL ON public.disponibilidade_advogados FROM anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.disponibilidade_advogados TO authenticated;
+
+ALTER TABLE public.disponibilidade_advogados ENABLE ROW LEVEL SECURITY;
+
+-- Leitura: a própria grade e a dos estagiários supervisionados (usada nos
+-- avisos de conflito ao agendar para eles).
+DROP POLICY IF EXISTS "disponibilidade: leitura pela equipe" ON public.disponibilidade_advogados;
+CREATE POLICY "disponibilidade: leitura pela equipe" ON public.disponibilidade_advogados
+  FOR SELECT TO authenticated
+  USING (public.pode_acessar_ficha(advogado_id));
+
+-- Escrita: cada um define somente a própria grade.
+DROP POLICY IF EXISTS "disponibilidade: criação pelo próprio" ON public.disponibilidade_advogados;
+CREATE POLICY "disponibilidade: criação pelo próprio" ON public.disponibilidade_advogados
+  FOR INSERT TO authenticated
+  WITH CHECK (advogado_id = (SELECT public.advogado_atual_id()));
+
+DROP POLICY IF EXISTS "disponibilidade: atualização pelo próprio" ON public.disponibilidade_advogados;
+CREATE POLICY "disponibilidade: atualização pelo próprio" ON public.disponibilidade_advogados
+  FOR UPDATE TO authenticated
+  USING (advogado_id = (SELECT public.advogado_atual_id()))
+  WITH CHECK (advogado_id = (SELECT public.advogado_atual_id()));
+
+DROP POLICY IF EXISTS "disponibilidade: exclusão pelo próprio" ON public.disponibilidade_advogados;
+CREATE POLICY "disponibilidade: exclusão pelo próprio" ON public.disponibilidade_advogados
+  FOR DELETE TO authenticated
+  USING (advogado_id = (SELECT public.advogado_atual_id()));

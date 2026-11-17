@@ -70,6 +70,7 @@ Compromissos e reuniões dos advogados (seção 6 do `schema.sql`).
 |---|---|---|
 | `id` | UUID PK | |
 | `advogado_id` | UUID NOT NULL FK → `advogados.id` | Responsável. Base do RLS. |
+| `ficha_id` | UUID FK → `fichas_clientes.id` | Opcional (seção 7). `ON DELETE SET NULL`. O trigger `agenda_valida_ficha` só aceita fichas que o usuário consegue ver, e só checa quando a ficha é definida ou trocada. |
 | `titulo_evento` | TEXT NOT NULL | Não pode ser vazio |
 | `area_juridica` | TEXT NOT NULL | CHECK: uma das 6 áreas canônicas |
 | `prioridade` | TEXT NOT NULL | CHECK: `'alta'`, `'media'` (padrão) ou `'baixa'` |
@@ -79,6 +80,20 @@ Compromissos e reuniões dos advogados (seção 6 do `schema.sql`).
 | `created_at` | TIMESTAMPTZ | |
 
 Ao contrário das tabelas antigas, esta tem CHECKs no banco. O RLS usa a mesma `pode_acessar_ficha(advogado_id)`, mas aqui SELECT, INSERT, UPDATE e DELETE são liberados para a equipe responsável: o titular cuida dos próprios compromissos e dos seus estagiários, e o estagiário só dos dele. A chave `anon` não tem acesso.
+
+### `disponibilidade_advogados`
+Grade de atendimento, uma linha por advogado (seção 7). PK = `advogado_id`.
+
+| Coluna | Tipo | Observação |
+|---|---|---|
+| `advogado_id` | UUID PK FK → `advogados.id` | `ON DELETE CASCADE` |
+| `dias_semana` | SMALLINT[] | 0 = domingo ... 6 = sábado (igual a `Date#getDay` e `EXTRACT(DOW)`) |
+| `hora_inicio` / `hora_fim` | TIME | Horário local de Brasília, sem fuso; fim > início |
+| `duracao_reuniao_min` | INTEGER | 10 a 480 |
+| `max_reunioes_dia` | INTEGER | 1 a 30. Limite "confortável": gera aviso no formulário, não bloqueia |
+| `updated_at` | TIMESTAMPTZ | Enviado pelo client ao salvar |
+
+RLS: leitura via `pode_acessar_ficha` (a própria grade e a dos estagiários, usada nos avisos de conflito). Escrita só da própria grade, via `advogado_atual_id()`.
 
 ## Hierarquia: titulares e estagiários
 
@@ -140,7 +155,10 @@ Organização:
 - `src/components/painel/sidebar.tsx`: menu lateral (desktop) e abas no topo (mobile). Para adicionar uma página, inclua o item em `ITENS`.
 - `src/app/login`: tela de login. `src/app/redefinir-senha`: destino do link de recuperação (`updateUser({ password })`).
 - `src/app/painel/layout.tsx`: protege todas as rotas `/painel/*` (manda para `/login` sem sessão) e renderiza a Sidebar. As páginas internas podem assumir que `useAuth().perfil` existe.
-- `src/app/painel/page.tsx`: fila de fichas. `src/app/painel/agenda/page.tsx`: agenda de reuniões em cartões, agrupada por dia, com filtro Próximos/Todos.
+- `src/app/painel/page.tsx`: fila de fichas. `src/app/painel/agenda/page.tsx`: agenda de reuniões em cartões, agrupada por dia, com filtro Próximos/Todos e o botão "Nova reunião". Clicar num cartão abre a edição.
+- `src/components/agenda/reuniao-modal.tsx`: formulário de criar e editar reunião. O responsável só pode ser o usuário ou os estagiários dele. Ao escolher uma ficha, sugere área, prioridade e título. Mostra avisos (não bloqueiam) de dia ou horário fora da grade, limite diário e conflito de horário.
+- `src/app/painel/disponibilidade/page.tsx` + `src/lib/disponibilidade.ts`: grade do próprio advogado (upsert por `advogado_id`).
+- `src/lib/datas.ts`: utilitários de data local (`chaveDia`, conversão de `datetime-local`). `src/components/toast.tsx`: aviso de sucesso.
 - A rota `/` redireciona para `/painel`.
 
 A URL `<domínio>/redefinir-senha` precisa estar em *Authentication → URL Configuration → Redirect URLs* no Supabase (em localhost e em produção).

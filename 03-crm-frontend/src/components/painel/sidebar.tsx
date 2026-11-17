@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, Inbox, LogOut, Scale, type LucideIcon } from "lucide-react";
+import { CalendarClock, CalendarDays, Inbox, LogOut, Scale, type LucideIcon } from "lucide-react";
 import { CARGO_LABEL, type Advogado } from "@/lib/advogados";
 
 interface ItemMenu {
@@ -14,6 +14,7 @@ interface ItemMenu {
 const ITENS: ItemMenu[] = [
   { href: "/painel", label: "Fila de atendimentos", icone: Inbox },
   { href: "/painel/agenda", label: "Agenda", icone: CalendarDays },
+  { href: "/painel/disponibilidade", label: "Disponibilidade", icone: CalendarClock },
 ];
 
 function iniciais(nome: string) {
