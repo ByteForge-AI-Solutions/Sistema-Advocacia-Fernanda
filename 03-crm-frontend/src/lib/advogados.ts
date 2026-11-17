@@ -129,3 +129,25 @@ export async function buscarPerfilPorEmail(email: string): Promise<ResultadoPerf
     },
   };
 }
+
+export interface MembroEquipe {
+  id: string;
+  nome: string;
+}
+
+/**
+ * Estagiários supervisionados pelo usuário. Vazio para estagiários.
+ * Usado para montar os IDs visíveis (o próprio + equipe), espelhando pode_acessar_ficha() do RLS.
+ */
+export async function buscarEstagiariosSupervisionados(perfil: Advogado): Promise<MembroEquipe[]> {
+  if (perfil.cargo !== "advogado") return [];
+
+  const { data, error } = await supabase
+    .from("advogados")
+    .select("id, nome")
+    .eq("supervisor_id", perfil.id)
+    .eq("cargo", "estagiario");
+
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}

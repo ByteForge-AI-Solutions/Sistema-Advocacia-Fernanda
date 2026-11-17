@@ -147,3 +147,76 @@ CREATE POLICY "fichas: atualização pela equipe responsável" ON public.fichas_
 -- Descomente SOMENTE depois de confirmar que o n8n usa a chave service_role.
 -- Se ele usar a chave anon, ativar isto vai parar o bot.
 -- ALTER TABLE public.conversas_memoria ENABLE ROW LEVEL SECURITY;
+
+
+-- =====================================================================
+-- 6. AGENDA DE REUNIÕES (agenda_advogados)
+-- ---------------------------------------------------------------------
+-- Depende da função public.pode_acessar_ficha() criada na seção 5.
+-- Pode ser executado mais de uma vez (idempotente). Para aplicar em um
+-- banco já criado, rode as seções 5 e 6 juntas no SQL Editor do Supabase.
+--
+-- Regras (as mesmas de fichas_clientes, via pode_acessar_ficha):
+--   * Titular vê, cria, edita e exclui os compromissos dele e os dos
+--     estagiários que supervisiona. Pode passar um compromisso para um
+--     desses estagiários e pegá-lo de volta.
+--   * Estagiário vê, cria, edita e exclui só os próprios compromissos e
+--     não pode transferi-los para outra pessoa.
+--   * Advogado inativo não vê nada. A chave anon não tem acesso.
+-- =====================================================================
+
+-- 6.1 Tabela
+CREATE TABLE IF NOT EXISTS public.agenda_advogados (
+  id               UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+  advogado_id      UUID        NOT NULL REFERENCES public.advogados(id),
+  titulo_evento    TEXT        NOT NULL,
+  area_juridica    TEXT        NOT NULL,
+  prioridade       TEXT        NOT NULL DEFAULT 'media',
+  data_hora_inicio TIMESTAMPTZ NOT NULL,
+  data_hora_fim    TIMESTAMPTZ,
+  status           TEXT        NOT NULL DEFAULT 'agendado',
+  created_at       TIMESTAMPTZ DEFAULT now(),
+
+  CONSTRAINT agenda_titulo_nao_vazio CHECK (btrim(titulo_evento) <> ''),
+  CONSTRAINT agenda_area_valida CHECK (area_juridica IN (
+    'trabalhista', 'empresarial', 'civil', 'cartorario_reurb', 'previdenciario', 'tributario'
+  )),
+  CONSTRAINT agenda_prioridade_valida CHECK (prioridade IN ('alta', 'media', 'baixa')),
+  CONSTRAINT agenda_status_valido CHECK (status IN ('agendado', 'confirmado', 'realizado', 'cancelado')),
+  CONSTRAINT agenda_fim_depois_do_inicio CHECK (data_hora_fim IS NULL OR data_hora_fim > data_hora_inicio)
+);
+
+-- 6.2 Índice: filtro por responsável + ordenação cronológica
+CREATE INDEX IF NOT EXISTS idx_agenda_advogado_inicio
+  ON public.agenda_advogados (advogado_id, data_hora_inicio);
+
+-- 6.3 Permissões da API: só usuários logados; o RLS filtra as linhas
+REVOKE ALL ON public.agenda_advogados FROM anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.agenda_advogados TO authenticated;
+
+-- 6.4 RLS
+ALTER TABLE public.agenda_advogados ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "agenda: leitura pela equipe responsável" ON public.agenda_advogados;
+CREATE POLICY "agenda: leitura pela equipe responsável" ON public.agenda_advogados
+  FOR SELECT TO authenticated
+  USING (public.pode_acessar_ficha(advogado_id));
+
+-- Só cria compromisso para si ou para um estagiário que supervisiona.
+DROP POLICY IF EXISTS "agenda: criação pela equipe responsável" ON public.agenda_advogados;
+CREATE POLICY "agenda: criação pela equipe responsável" ON public.agenda_advogados
+  FOR INSERT TO authenticated
+  WITH CHECK (public.pode_acessar_ficha(advogado_id));
+
+-- USING: só edita o que já pode ver.
+-- WITH CHECK: o novo responsável também precisa estar no seu alcance.
+DROP POLICY IF EXISTS "agenda: atualização pela equipe responsável" ON public.agenda_advogados;
+CREATE POLICY "agenda: atualização pela equipe responsável" ON public.agenda_advogados
+  FOR UPDATE TO authenticated
+  USING (public.pode_acessar_ficha(advogado_id))
+  WITH CHECK (public.pode_acessar_ficha(advogado_id));
+
+DROP POLICY IF EXISTS "agenda: exclusão pela equipe responsável" ON public.agenda_advogados;
+CREATE POLICY "agenda: exclusão pela equipe responsável" ON public.agenda_advogados
+  FOR DELETE TO authenticated
+  USING (public.pode_acessar_ficha(advogado_id));

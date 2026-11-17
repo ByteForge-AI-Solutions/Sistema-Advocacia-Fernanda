@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabase/client";
-import type { Advogado } from "@/lib/advogados";
+import { buscarEstagiariosSupervisionados, type Advogado } from "@/lib/advogados";
 
 export const PRIORIDADES = ["alta", "media", "baixa"] as const;
 export type Prioridade = (typeof PRIORIDADES)[number];
@@ -56,7 +56,7 @@ interface FichaRow {
 }
 
 /** "Média", "MEDIA", " media " → "media". O bot pode gravar com acento ou maiúscula. */
-function normalizar(valor: string | null | undefined): string {
+export function normalizar(valor: string | null | undefined): string {
   return (valor ?? "")
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "")
@@ -65,7 +65,7 @@ function normalizar(valor: string | null | undefined): string {
     .replace(/[\s-]+/g, "_");
 }
 
-function paraPrioridade(valor: string | null): Prioridade | null {
+export function paraPrioridade(valor: string | null): Prioridade | null {
   const v = normalizar(valor);
   return (PRIORIDADES as readonly string[]).includes(v) ? (v as Prioridade) : null;
 }
@@ -94,18 +94,7 @@ export function ordenarFila(fichas: Ficha[]): Ficha[] {
  * O RLS no banco aplica a mesma regra; este filtro só evita depender dele para montar a tela.
  */
 export async function buscarFichas(perfil: Advogado): Promise<Ficha[]> {
-  let estagiarios: { id: string; nome: string }[] = [];
-
-  if (perfil.cargo === "advogado") {
-    const { data, error } = await supabase
-      .from("advogados")
-      .select("id, nome")
-      .eq("supervisor_id", perfil.id)
-      .eq("cargo", "estagiario");
-    if (error) throw new Error(error.message);
-    estagiarios = data ?? [];
-  }
-
+  const estagiarios = await buscarEstagiariosSupervisionados(perfil);
   const idsResponsaveis = [perfil.id, ...estagiarios.map((e) => e.id)];
   const estagiarioPorId = new Map(estagiarios.map((e) => [e.id, e]));
 

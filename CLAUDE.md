@@ -63,6 +63,23 @@ Memória da conversa do agente no WhatsApp, uma linha por cliente.
 
 Não há FK entre `conversas_memoria` e `fichas_clientes`. A ligação é feita pelo telefone (`telefone_cliente` = `telefone`).
 
+### `agenda_advogados`
+Compromissos e reuniões dos advogados (seção 6 do `schema.sql`).
+
+| Coluna | Tipo | Observação |
+|---|---|---|
+| `id` | UUID PK | |
+| `advogado_id` | UUID NOT NULL FK → `advogados.id` | Responsável. Base do RLS. |
+| `titulo_evento` | TEXT NOT NULL | Não pode ser vazio |
+| `area_juridica` | TEXT NOT NULL | CHECK: uma das 6 áreas canônicas |
+| `prioridade` | TEXT NOT NULL | CHECK: `'alta'`, `'media'` (padrão) ou `'baixa'` |
+| `data_hora_inicio` | TIMESTAMPTZ NOT NULL | |
+| `data_hora_fim` | TIMESTAMPTZ | Opcional; se preenchido, precisa ser depois do início |
+| `status` | TEXT NOT NULL | CHECK: `'agendado'` (padrão), `'confirmado'`, `'realizado'` ou `'cancelado'` |
+| `created_at` | TIMESTAMPTZ | |
+
+Ao contrário das tabelas antigas, esta tem CHECKs no banco. O RLS usa a mesma `pode_acessar_ficha(advogado_id)`, mas aqui SELECT, INSERT, UPDATE e DELETE são liberados para a equipe responsável: o titular cuida dos próprios compromissos e dos seus estagiários, e o estagiário só dos dele. A chave `anon` não tem acesso.
+
 ## Hierarquia: titulares e estagiários
 
 - **Titular:** `cargo = 'advogado'` e `supervisor_id = NULL`.
@@ -118,7 +135,13 @@ Organização:
 - `src/lib/fichas.ts`: tipos `Ficha`/`Prioridade`/`StatusAtendimento`, `ordenarFila` e `buscarFichas(perfil)`, que aplica a regra titular/estagiário. CPF não é carregado na listagem (LGPD).
 - `src/components/fichas/`: `badges.tsx` (cores de prioridade e status e a etiqueta "Sob supervisão - Nome"), `ficha-card.tsx` e `fila-fichas.tsx` (filtros por status e resumo por prioridade).
 - `src/components/esqueci-senha-modal.tsx`: modal que chama `resetPasswordForEmail` com `redirectTo` apontando para `/redefinir-senha`.
-- `src/app/login`: tela de login. `src/app/redefinir-senha`: destino do link de recuperação (`updateUser({ password })`). `src/app/painel`: dashboard com a fila. A rota `/` redireciona para `/painel`, que manda para `/login` quando não há sessão.
+- `src/lib/agenda.ts`: interface `AgendaAdvogado` (espelho da tabela) e `EventoAgenda` (+ estagiário). `buscarAgenda(perfil)` aplica a regra titular/estagiário e ordena por `data_hora_inicio` crescente.
+- `buscarEstagiariosSupervisionados(perfil)` (em `advogados.ts`) devolve a equipe do titular. É usada pela fila e pela agenda para montar os IDs visíveis, espelhando `pode_acessar_ficha`.
+- `src/components/painel/sidebar.tsx`: menu lateral (desktop) e abas no topo (mobile). Para adicionar uma página, inclua o item em `ITENS`.
+- `src/app/login`: tela de login. `src/app/redefinir-senha`: destino do link de recuperação (`updateUser({ password })`).
+- `src/app/painel/layout.tsx`: protege todas as rotas `/painel/*` (manda para `/login` sem sessão) e renderiza a Sidebar. As páginas internas podem assumir que `useAuth().perfil` existe.
+- `src/app/painel/page.tsx`: fila de fichas. `src/app/painel/agenda/page.tsx`: agenda de reuniões em cartões, agrupada por dia, com filtro Próximos/Todos.
+- A rota `/` redireciona para `/painel`.
 
 A URL `<domínio>/redefinir-senha` precisa estar em *Authentication → URL Configuration → Redirect URLs* no Supabase (em localhost e em produção).
 
