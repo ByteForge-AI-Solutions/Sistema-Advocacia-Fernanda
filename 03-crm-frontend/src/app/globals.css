@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* Azul-marinho institucional do escritório (usado junto com os tons slate do Tailwind) */
+@theme {
+  --color-navy-50: #eef3fb;
+  --color-navy-100: #d9e3f4;
+  --color-navy-200: #b6c8e8;
+  --color-navy-300: #8aa6d6;
+  --color-navy-400: #5b7fbf;
+  --color-navy-500: #3d61a6;
+  --color-navy-600: #2c4b88;
+  --color-navy-700: #233c6e;
+  --color-navy-800: #1b2f57;
+  --color-navy-900: #142342;
+  --color-navy-950: #0c162b;
+}

@@ -1,0 +1,129 @@
+# CLAUDE.md
+
+Guia para o Claude Code trabalhar neste repositório: Recepcionista Jurídico IA & CRM de Triagem do escritório **Dias e Fernandes Advocacia**.
+
+## Estrutura do repositório
+
+- `01-agentes-ia/`: fluxos n8n, prompts de triagem e regras multimodais.
+- `02-backend-integracao/`: webhooks, travas de mídia, lógica de prioridade e APIs de tribunais.
+- `03-crm-frontend/`: CRM em Next.js (App Router + TypeScript + Tailwind CSS), com `@supabase/supabase-js` e `lucide-react`.
+- `04-banco-dados/`: `schema.sql` com a modelagem do Supabase (PostgreSQL).
+
+Credenciais ficam em `.env`/`.env.local` (ignorados pelo git). Os dados são sensíveis (LGPD): nunca registre CPF, telefone ou relato de cliente em logs, commits ou fixtures reais.
+
+## Banco de dados (`04-banco-dados/schema.sql`)
+
+### `advogados`
+Advogados titulares e estagiários do escritório.
+
+| Coluna | Tipo | Observação |
+|---|---|---|
+| `id` | UUID PK | `gen_random_uuid()` |
+| `nome` | TEXT NOT NULL | |
+| `email` | TEXT UNIQUE | Usado para vincular ao login (Supabase Auth). O `schema.sql` não preenche, mas os e-mails já foram cadastrados direto no Supabase. |
+| `cargo` | TEXT | `'advogado'` (padrão) ou `'estagiario'` |
+| `supervisor_id` | UUID FK → `advogados.id` | Preenchido **apenas** para estagiários |
+| `areas_atuacao` | TEXT[] NOT NULL | Valores da lista de áreas abaixo |
+| `ativo` | BOOLEAN | Padrão `true`; inativos não recebem casos |
+| `ultima_atribuicao` | TIMESTAMPTZ | Controla o rodízio (round-robin): recebe o caso quem tem o valor mais antigo |
+| `created_at` | TIMESTAMPTZ | |
+
+### `fichas_clientes`
+Ficha estruturada gerada pela IA ao fim da triagem.
+
+| Coluna | Tipo | Observação |
+|---|---|---|
+| `id` | UUID PK | |
+| `nome_cliente` | TEXT NOT NULL | |
+| `cpf` | TEXT | Opcional |
+| `telefone` | TEXT NOT NULL | Mesmo formato de `conversas_memoria.telefone_cliente` |
+| `area_identificada` | TEXT NOT NULL | Uma das 6 áreas jurídicas |
+| `prioridade` | TEXT NOT NULL | `'alta'`, `'media'` (padrão) ou `'baixa'` |
+| `motivo_prioridade` | TEXT | Justificativa da urgência |
+| `resumo_fatos` | TEXT NOT NULL | Resumo jurídico gerado pela IA |
+| `documentos_urls` | TEXT[] | Arquivos enviados pelo cliente |
+| `processos_encontrados` | JSONB | Resultado da consulta processual (array) |
+| `advogado_id` | UUID FK → `advogados.id` | Responsável atribuído pelo roteamento |
+| `status_atendimento` | TEXT | `'novo'` (padrão), `'em_analise'`, `'agendado'` ou `'finalizado'` |
+| `created_at` | TIMESTAMPTZ | |
+
+No CRM, a fila de cada advogado é ordenada por `prioridade` (alta → média → baixa) e depois por `created_at`, da mais antiga para a mais nova. Como `prioridade` é TEXT, ordene com um mapeamento explícito, não alfabeticamente. Essa lógica está em `ordenarFila` (`03-crm-frontend/src/lib/fichas.ts`), que também normaliza variações como `'Média'`/`'MEDIA'`.
+
+**RLS** (seção 5 do `schema.sql`): a função `pode_acessar_ficha(responsavel_id)` decide o acesso. O titular vê e edita as fichas dele e as dos estagiários que supervisiona, e pode delegar só para esses estagiários. O estagiário vê e edita só as dele e não consegue repassá-las. INSERT e DELETE são exclusivos da `service_role` (bot n8n).
+
+### `conversas_memoria`
+Memória da conversa do agente no WhatsApp, uma linha por cliente.
+
+| Coluna | Tipo | Observação |
+|---|---|---|
+| `telefone_cliente` | TEXT PK | Identifica a conversa |
+| `historico_mensagens` | JSONB | Array de mensagens (padrão `[]`) |
+| `status` | TEXT | Padrão `'em_andamento'` |
+| `updated_at` | TIMESTAMPTZ | |
+
+Não há FK entre `conversas_memoria` e `fichas_clientes`. A ligação é feita pelo telefone (`telefone_cliente` = `telefone`).
+
+## Hierarquia: titulares e estagiários
+
+- **Titular:** `cargo = 'advogado'` e `supervisor_id = NULL`.
+- **Estagiário:** `cargo = 'estagiario'` e `supervisor_id` aponta para o titular que supervisiona (autorrelacionamento em `advogados`).
+
+Equipe atual (seed):
+
+| Nome | Cargo | Áreas | Supervisor |
+|---|---|---|---|
+| Fernanda Lemos Fernandes Rigo | advogado | trabalhista, empresarial | — |
+| Kayo Ronnaro Silva Dias | advogado | civil | — |
+| Guilherme Alves da Silva | advogado | cartorario_reurb | — |
+| Karolina Kedma Araujo | advogado | trabalhista, previdenciario | — |
+| Caio Pereira Melo | advogado | tributario | — |
+| Ana Júlia Rodrigues de Souza | estagiario | trabalhista | Fernanda |
+
+Regras confirmadas:
+- **Rodízio automático (bot):** só entram `cargo = 'advogado' AND ativo = true`. Estagiários **nunca** recebem fichas do bot.
+- **Delegação:** o estagiário só recebe uma ficha quando o titular supervisor a delega manualmente no CRM.
+- **Validação de cargo:** é feita no código do CRM, não no banco (não há CHECK). A função `validarPerfil` em `03-crm-frontend/src/lib/advogados.ts` exige que `cargo` seja `'advogado'` ou `'estagiario'`, que o titular não tenha supervisor e que o estagiário tenha. Reutilize essa função em qualquer tela que crie ou edite advogados.
+- **Login:** o `email` de todos (titulares e estagiária) já está preenchido. O usuário do Supabase Auth é ligado ao registro em `advogados` pelo e-mail, sem diferenciar maiúsculas de minúsculas. Usuário sem registro, inativo ou com cargo inválido é deslogado na hora.
+
+## As 6 áreas jurídicas
+
+Esses são os valores canônicos usados em `areas_atuacao` e `area_identificada`: minúsculos, sem acento, com `_`.
+
+| Valor | Área | Titular(es) |
+|---|---|---|
+| `trabalhista` | Direito do Trabalho | Fernanda + Karolina (rodízio por `ultima_atribuicao`) |
+| `empresarial` | Direito Empresarial | Fernanda |
+| `civil` | Direito Civil | Kayo |
+| `cartorario_reurb` | Cartorário / REURB (regularização fundiária) | Guilherme |
+| `previdenciario` | Direito Previdenciário | Karolina |
+| `tributario` | Direito Tributário | Caio |
+
+Ao atribuir um caso, atualize `ultima_atribuicao = now()` do advogado escolhido para manter o rodízio equilibrado.
+
+## Frontend (`03-crm-frontend/`)
+
+Comandos (rodar dentro de `03-crm-frontend/`):
+- `npm run dev`: servidor de desenvolvimento
+- `npm run build`: build de produção
+- `npm run lint`: lint
+
+As variáveis do Supabase ficam em `03-crm-frontend/.env.local`: `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Nunca exponha a `service_role` key no client.
+
+É Next.js 16: leia `03-crm-frontend/AGENTS.md` e a documentação em `node_modules/next/dist/docs/` antes de usar APIs do framework.
+
+Organização:
+- `src/lib/supabase/client.ts`: cliente Supabase do navegador (singleton).
+- `src/lib/advogados.ts`: tipos `Advogado`/`Cargo`/`AreaJuridica`, rótulos das áreas, `validarPerfil` e `buscarPerfilPorEmail`.
+- `src/components/auth-provider.tsx`: contexto de autenticação (`useAuth()` → `estado`, `perfil`, `entrar`, `sair`). O perfil vindo de `advogados` fica disponível para todo o app.
+- `src/lib/fichas.ts`: tipos `Ficha`/`Prioridade`/`StatusAtendimento`, `ordenarFila` e `buscarFichas(perfil)`, que aplica a regra titular/estagiário. CPF não é carregado na listagem (LGPD).
+- `src/components/fichas/`: `badges.tsx` (cores de prioridade e status e a etiqueta "Sob supervisão - Nome"), `ficha-card.tsx` e `fila-fichas.tsx` (filtros por status e resumo por prioridade).
+- `src/components/esqueci-senha-modal.tsx`: modal que chama `resetPasswordForEmail` com `redirectTo` apontando para `/redefinir-senha`.
+- `src/app/login`: tela de login. `src/app/redefinir-senha`: destino do link de recuperação (`updateUser({ password })`). `src/app/painel`: dashboard com a fila. A rota `/` redireciona para `/painel`, que manda para `/login` quando não há sessão.
+
+A URL `<domínio>/redefinir-senha` precisa estar em *Authentication → URL Configuration → Redirect URLs* no Supabase (em localhost e em produção).
+
+Na máquina de desenvolvimento, `npm run build` pode falhar por falta de memória (pouca RAM livre). Valide com `npx tsc --noEmit`, `npx eslint` e `npm run dev`.
+
+A autenticação roda no client (sessão no `localStorage`, gerenciada pelo supabase-js). Por isso a proteção real dos dados precisa vir do **RLS no Supabase**, não do redirecionamento de rotas.
+
+Identidade visual: azul-marinho (`navy-*`, definido em `src/app/globals.css`) com cinza-ardósia (`slate-*` do Tailwind).
