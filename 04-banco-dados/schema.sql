@@ -281,23 +281,37 @@ $$;
 REVOKE EXECUTE ON FUNCTION public.advogado_atual_id() FROM PUBLIC, anon;
 GRANT  EXECUTE ON FUNCTION public.advogado_atual_id() TO authenticated;
 
--- 7.4 Grade de atendimento: uma linha por advogado.
+-- 7.4 Grade de atendimento: UMA LINHA POR ADVOGADO POR DIA DA SEMANA.
+-- Colunas e tipos conferidos na tabela do Supabase em 17/11/2026; o CRM foi
+-- feito para eles. Os NOT NULL/DEFAULT/CHECK abaixo são os recomendados para
+-- uma instalação nova (a tabela existente pode não ter todos).
+-- "ativo = false" mantém a linha, mas o dia não é atendido.
 -- Horários sem fuso: representam o horário local do escritório (Brasília).
--- dias_semana usa a numeração do Postgres/JS: 0 = domingo ... 6 = sábado.
+-- dia_semana usa a numeração do Postgres/JS: 0 = domingo ... 6 = sábado.
+-- O CRM grava com upsert por "id" (gera o UUID no navegador quando o dia é novo).
 CREATE TABLE IF NOT EXISTS public.disponibilidade_advogados (
-  advogado_id         UUID        PRIMARY KEY REFERENCES public.advogados(id) ON DELETE CASCADE,
-  dias_semana         SMALLINT[]  NOT NULL DEFAULT '{1,2,3,4,5}',
-  hora_inicio         TIME        NOT NULL DEFAULT '09:00',
-  hora_fim            TIME        NOT NULL DEFAULT '18:00',
-  duracao_reuniao_min INTEGER     NOT NULL DEFAULT 60,
-  max_reunioes_dia    INTEGER     NOT NULL DEFAULT 6,
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id                  UUID     DEFAULT gen_random_uuid() PRIMARY KEY,
+  advogado_id         UUID     NOT NULL REFERENCES public.advogados(id) ON DELETE CASCADE,
+  dia_semana          INTEGER  NOT NULL,
+  hora_inicio         TIME     NOT NULL,
+  hora_fim            TIME     NOT NULL,
+  duracao_reuniao_min INTEGER  NOT NULL DEFAULT 60,
+  max_reunioes_dia    INTEGER  NOT NULL DEFAULT 6,
+  ativo               BOOLEAN  NOT NULL DEFAULT true,
 
-  CONSTRAINT disp_dias_validos   CHECK (dias_semana <@ ARRAY[0,1,2,3,4,5,6]::SMALLINT[]),
-  CONSTRAINT disp_horario_valido CHECK (hora_fim > hora_inicio),
-  CONSTRAINT disp_duracao_valida CHECK (duracao_reuniao_min BETWEEN 10 AND 480),
-  CONSTRAINT disp_max_valido     CHECK (max_reunioes_dia BETWEEN 1 AND 30)
+  CONSTRAINT disp_dia_valido     CHECK (dia_semana BETWEEN 0 AND 6),
+  CONSTRAINT disp_horario_valido CHECK (hora_fim > hora_inicio)
 );
+
+CREATE INDEX IF NOT EXISTS idx_disponibilidade_advogado
+  ON public.disponibilidade_advogados (advogado_id, dia_semana);
+
+-- (OPCIONAL) Garante no máximo uma linha por advogado/dia. Antes de rodar,
+-- confira se não há duplicatas:
+--   SELECT advogado_id, dia_semana, count(*) FROM public.disponibilidade_advogados
+--   GROUP BY 1, 2 HAVING count(*) > 1;
+-- CREATE UNIQUE INDEX IF NOT EXISTS uq_disponibilidade_advogado_dia
+--   ON public.disponibilidade_advogados (advogado_id, dia_semana);
 
 REVOKE ALL ON public.disponibilidade_advogados FROM anon;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.disponibilidade_advogados TO authenticated;

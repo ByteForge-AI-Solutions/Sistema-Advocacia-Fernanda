@@ -151,8 +151,10 @@ export function ReuniaoModal({ perfil, responsaveis, eventos, evento, onFechar, 
     };
   }, [perfil, responsaveis]);
 
-  const duracaoDe = (advogadoId: string) =>
-    disponibilidades.get(advogadoId)?.duracao_reuniao_min ?? DURACAO_PADRAO;
+  const duracaoDe = (advogadoId: string) => {
+    const d = disponibilidades.get(advogadoId)?.duracao_reuniao_min;
+    return d && Number.isInteger(d) && d > 0 ? d : DURACAO_PADRAO;
+  };
 
   function definir<K extends keyof FormReuniao>(chave: K, valor: FormReuniao[K]) {
     setForm((f) => ({ ...f, [chave]: valor }));
@@ -206,18 +208,23 @@ export function ReuniaoModal({ perfil, responsaveis, eventos, evento, onFechar, 
 
     const disp = disponibilidades.get(form.advogado_id);
     if (disp) {
-      if (!disp.dias_semana.includes(ini.getDay())) {
+      // Grade por dia: cada dia da semana tem sua própria janela de atendimento.
+      const janela = disp.dias.find((d) => d.dia_semana === ini.getDay());
+      if (!janela) {
         lista.push(`${ehProprio ? "Você não atende" : `${nome} não atende`} neste dia (${nomeDia(ini.getDay())}).`);
-      }
-      const foraDoHorario =
-        minutosDoDia(ini) < paraMinutos(disp.hora_inicio) ||
-        chaveDia(fimEfetivo) !== chaveDia(ini) ||
-        minutosDoDia(fimEfetivo) > paraMinutos(disp.hora_fim);
-      if (foraDoHorario) {
-        lista.push(`Fora do horário de atendimento (${disp.hora_inicio} às ${disp.hora_fim}).`);
+      } else {
+        const foraDoHorario =
+          minutosDoDia(ini) < paraMinutos(janela.hora_inicio) ||
+          chaveDia(fimEfetivo) !== chaveDia(ini) ||
+          minutosDoDia(fimEfetivo) > paraMinutos(janela.hora_fim);
+        if (foraDoHorario) {
+          lista.push(
+            `Fora do horário de atendimento de ${nomeDia(ini.getDay())} (${janela.hora_inicio} às ${janela.hora_fim}).`,
+          );
+        }
       }
       const noDia = outros.filter((e) => chaveDia(new Date(e.data_hora_inicio)) === chaveDia(ini)).length;
-      if (noDia >= disp.max_reunioes_dia) {
+      if (Number.isInteger(disp.max_reunioes_dia) && noDia >= disp.max_reunioes_dia) {
         lista.push(
           `Limite confortável de ${disp.max_reunioes_dia} reuniões por dia atingido: já há ${noDia} neste dia.`,
         );

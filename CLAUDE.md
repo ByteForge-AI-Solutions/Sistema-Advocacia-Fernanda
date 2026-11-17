@@ -82,18 +82,21 @@ Compromissos e reuniões dos advogados (seção 6 do `schema.sql`).
 Ao contrário das tabelas antigas, esta tem CHECKs no banco. O RLS usa a mesma `pode_acessar_ficha(advogado_id)`, mas aqui SELECT, INSERT, UPDATE e DELETE são liberados para a equipe responsável: o titular cuida dos próprios compromissos e dos seus estagiários, e o estagiário só dos dele. A chave `anon` não tem acesso.
 
 ### `disponibilidade_advogados`
-Grade de atendimento, uma linha por advogado (seção 7). PK = `advogado_id`.
+Grade de atendimento: **uma linha por advogado por dia da semana** (seção 7.4). Essa é a estrutura real do Supabase, conferida em 17/11/2026; a tabela foi criada antes da seção 7, por isso **não** tem `dias_semana` nem `updated_at`.
 
 | Coluna | Tipo | Observação |
 |---|---|---|
-| `advogado_id` | UUID PK FK → `advogados.id` | `ON DELETE CASCADE` |
-| `dias_semana` | SMALLINT[] | 0 = domingo ... 6 = sábado (igual a `Date#getDay` e `EXTRACT(DOW)`) |
-| `hora_inicio` / `hora_fim` | TIME | Horário local de Brasília, sem fuso; fim > início |
-| `duracao_reuniao_min` | INTEGER | 10 a 480 |
-| `max_reunioes_dia` | INTEGER | 1 a 30. Limite "confortável": gera aviso no formulário, não bloqueia |
-| `updated_at` | TIMESTAMPTZ | Enviado pelo client ao salvar |
+| `id` | UUID PK | O CRM gera com `crypto.randomUUID()` ao criar um dia novo |
+| `advogado_id` | UUID FK → `advogados.id` | |
+| `dia_semana` | INTEGER | 0 = domingo ... 6 = sábado (igual a `Date#getDay` e `EXTRACT(DOW)`) |
+| `hora_inicio` / `hora_fim` | TIME | Horário local de Brasília, sem fuso. Cada dia tem a própria janela |
+| `duracao_reuniao_min` | INTEGER | Igual em todas as linhas do advogado (o CRM grava o mesmo valor) |
+| `max_reunioes_dia` | INTEGER | Idem. Limite "confortável": gera aviso no formulário, não bloqueia |
+| `ativo` | BOOLEAN | `false` = não atende naquele dia. Desmarcar um dia não apaga a linha |
 
-RLS: leitura via `pode_acessar_ficha` (a própria grade e a dos estagiários, usada nos avisos de conflito). Escrita só da própria grade, via `advogado_atual_id()`.
+Gravação: `salvarMinhaDisponibilidade` faz **um único upsert por `id`**, reaproveitando a linha existente de cada dia. Não há UNIQUE (advogado_id, dia_semana) garantido no banco; a leitura usa a primeira linha ativa de cada dia. RLS: leitura via `pode_acessar_ficha` (a própria grade e a dos estagiários, usada nos avisos de conflito). Escrita só da própria grade, via `advogado_atual_id()`.
+
+Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta REST com a chave anon e `limit=0` devolve `42703` se a coluna não existe e `42501` se existe (anon não tem permissão). Um filtro com valor inválido (`?col=eq.zz`) revela o tipo da coluna na mensagem de erro.
 
 ## Hierarquia: titulares e estagiários
 
