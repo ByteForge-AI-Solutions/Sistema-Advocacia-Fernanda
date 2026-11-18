@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, Inbox, ListFilter, LoaderCircle, RefreshCw, UsersRound } from "lucide-react";
+import { CalendarClock, CircleAlert, Inbox, ListFilter, LoaderCircle, RefreshCw, UsersRound } from "lucide-react";
+import { TEMPERATURAS, TEMPERATURA_INFO, situacaoProximaAcao, type SituacaoAcao } from "@/lib/leads";
 import { buscarEquipeVisivel, ehSocio, ehTitular, rotuloMembro, type Advogado, type MembroEquipe } from "@/lib/advogados";
 import {
   PRIORIDADES,
@@ -18,6 +19,14 @@ import { FichaCard } from "@/components/fichas/ficha-card";
 type Filtro = "todos" | StatusAtendimento;
 /** "todos", "sem" (sem responsável) ou o id de um membro da equipe. */
 type FiltroResponsavel = string;
+/** Tarefas do dia (seção 7 do documento de leads). */
+type FiltroAcao = "todas" | Exclude<SituacaoAcao, "futura">;
+const FILTROS_ACAO: { valor: FiltroAcao; label: string }[] = [
+  { valor: "todas", label: "Todas" },
+  { valor: "vencida", label: "Vencidas" },
+  { valor: "hoje", label: "Hoje" },
+  { valor: "sem", label: "Sem próxima ação" },
+];
 
 export function FilaFichas({ perfil }: { perfil: Advogado }) {
   const [fichas, setFichas] = useState<Ficha[]>([]);
@@ -27,6 +36,9 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
   const [versao, setVersao] = useState(0);
   const [equipe, setEquipe] = useState<MembroEquipe[]>([]);
   const [responsavel, setResponsavel] = useState<FiltroResponsavel>("todos");
+  const [filtroAcao, setFiltroAcao] = useState<FiltroAcao>("todas");
+  // Momento da última carga: base estável para "vencida/hoje" durante a renderização.
+  const [carregadoEm, setCarregadoEm] = useState<Date | null>(null);
 
   useEffect(() => {
     let atual = true; // descarta respostas de requisições antigas
@@ -35,6 +47,7 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
         if (!atual) return;
         setFichas(dados);
         setEquipe(membros);
+        setCarregadoEm(new Date());
         setErro(null);
         setCarregando(false);
       },
@@ -64,6 +77,28 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
   const qtdSemResponsavel = useMemo(() => fichas.filter((f) => f.advogado_id === null).length, [fichas]);
   const mostrarFiltroResponsavel = equipe.length > 1 || qtdSemResponsavel > 0;
 
+  const situacoes = useMemo(() => {
+    const m = new Map<string, SituacaoAcao | null>();
+    for (const f of fichas) {
+      m.set(
+        f.id,
+        f.lead.disponivel && carregadoEm
+          ? situacaoProximaAcao({ proxima_acao_em: f.lead.proxima_acao_em, ativo: f.status_original.trim().toLowerCase() !== "finalizado" }, carregadoEm)
+          : null,
+      );
+    }
+    return m;
+  }, [fichas, carregadoEm]);
+  const leadDisponivel = fichas.some((f) => f.lead.disponivel);
+  const contagemAcao = useMemo(() => {
+    const c: Record<FiltroAcao, number> = { todas: doResponsavel.length, vencida: 0, hoje: 0, sem: 0 };
+    for (const f of doResponsavel) {
+      const s = situacoes.get(f.id);
+      if (s === "vencida" || s === "hoje" || s === "sem") c[s]++;
+    }
+    return c;
+  }, [doResponsavel, situacoes]);
+
   const contagemStatus = useMemo(() => {
     const c: Record<Filtro, number> = { todos: doResponsavel.length, novo: 0, em_analise: 0, agendado: 0, finalizado: 0 };
     for (const f of doResponsavel) if (f.status) c[f.status]++;
@@ -79,13 +114,11 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
   const qtdSupervisao = useMemo(() => fichas.filter((f) => f.estagiario).length, [fichas]);
 
   const visiveis = useMemo(() => {
-    if (filtro !== "todos") return doResponsavel.filter((f) => f.status === filtro);
+    const base = filtroAcao === "todas" ? doResponsavel : doResponsavel.filter((f) => situacoes.get(f.id) === filtroAcao);
+    if (filtro !== "todos") return base.filter((f) => f.status === filtro);
     // Em "Todas", as finalizadas descem para o fim sem quebrar a ordem de prioridade/chegada.
-    return [
-      ...doResponsavel.filter((f) => f.status !== "finalizado"),
-      ...doResponsavel.filter((f) => f.status === "finalizado"),
-    ];
-  }, [doResponsavel, filtro]);
+    return [...base.filter((f) => f.status !== "finalizado"), ...base.filter((f) => f.status === "finalizado")];
+  }, [doResponsavel, filtro, filtroAcao, situacoes]);
 
   const opcoes: { valor: Filtro; label: string }[] = [
     { valor: "todos", label: "Todas" },
@@ -152,6 +185,46 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
           Atualizar
         </button>
       </div>
+
+      {leadDisponivel && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <CalendarClock className="size-4 text-slate-400" aria-hidden />
+          <div role="group" aria-label="Filtrar por próxima ação" className="flex flex-wrap gap-1.5">
+            {FILTROS_ACAO.map(({ valor, label }) => {
+              const ativo = filtroAcao === valor;
+              const alerta = valor === "vencida" && contagemAcao.vencida > 0;
+              return (
+                <button
+                  key={valor}
+                  type="button"
+                  onClick={() => setFiltroAcao(valor)}
+                  aria-pressed={ativo}
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition ${
+                    ativo
+                      ? alerta
+                        ? "bg-red-700 text-white"
+                        : "bg-navy-900 text-white"
+                      : alerta
+                        ? "bg-red-50 text-red-800 ring-1 ring-inset ring-red-200 hover:bg-red-100"
+                        : "bg-white text-slate-600 ring-1 ring-inset ring-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  {label}
+                  <span className="tabular-nums opacity-70">{contagemAcao[valor]}</span>
+                </button>
+              );
+            })}
+          </div>
+          <span className="ml-auto hidden items-center gap-3 text-[11px] text-slate-500 md:flex" aria-label="Legenda de prioridade">
+            {TEMPERATURAS.map((t) => (
+              <span key={t} className="inline-flex items-center gap-1" title={`${TEMPERATURA_INFO[t].regra}. ${TEMPERATURA_INFO[t].acao}`}>
+                <span className={`size-2 rounded-full ${TEMPERATURA_INFO[t].ponto}`} aria-hidden />
+                {TEMPERATURA_INFO[t].label}
+              </span>
+            ))}
+          </span>
+        </div>
+      )}
 
       {mostrarFiltroResponsavel && (
         <div className="mt-3 flex items-center gap-2">

@@ -98,13 +98,15 @@ assert edge.index('const state = await persist(parsed)') < edge.index('return ne
 # Hash SHA256 dos arquivos sensíveis: tomados da última versão enviada do CRM.
 # v4 (cargo 'socio', 2026-11-18): advogados.ts, agenda.ts, fichas.ts, reuniao-modal.tsx e
 # app/painel/page.tsx foram atualizados de propósito; hashes renovados abaixo.
+# v5 (leads e pós-venda, 2026-11-18): fichas.ts ganhou os campos de lead, o fallback sem a
+# migração v5 e a ordenação por cor; hash renovado.
 # O hash é calculado com fim de linha normalizado (CRLF → LF): no Windows o git
 # (core.autocrlf) troca o fim de linha no checkout sem alterar o conteúdo.
 protected={
  '03-crm-frontend/src/lib/advogados.ts':'e4b8f38336364d721fe61468aa5c99cd89443f5d06acfe220be6a5f1d2086f23',
  '03-crm-frontend/src/lib/agenda.ts':'bb402cc76667354b4d8500f7db016b1b2086d01e88fbbdcb0c32cac5eb397a94',
  '03-crm-frontend/src/lib/disponibilidade.ts':'a41dd7d431b7f4bb046a63b8bd70c40a68d781312e1d94ea89632fd710642245',
- '03-crm-frontend/src/lib/fichas.ts':'7d47d5ca3f3dbf902da954503e52586e27ded8ef6c1da798e4a49c7a7f115515',
+ '03-crm-frontend/src/lib/fichas.ts':'5390775e0cc3914ba80782d3c6855f4ef866d07c548bd77a3460b20677c77146',
  '03-crm-frontend/src/components/auth-provider.tsx':'e231dd519cb9c9f1d3a96dacc7c7e399a1a40566f1228b8c2f9265c68a6fa1e7',
  '03-crm-frontend/src/components/agenda/reuniao-modal.tsx':'0c9980e6663a85b17bed166e97cda43ea675999a814346ac80ffb7e306fedd64',
  '03-crm-frontend/src/app/painel/page.tsx':'fb576cafebf40d7765f00028f8953d5ec41477515b3184205ee112d1d9999182',
@@ -124,6 +126,16 @@ assert v4.count("cargo IN ('advogado','socio')") == 3, 'dfu_ofertar/dfu_criar_fi
 assert "cargo='advogado'" not in v4, 'rodízio do bot não pode excluir sócios'
 assert 'estagiario' not in v4.split('7. RODÍZIO DO BOT')[1], 'estagiário nunca entra no rodízio'
 assert "SELECT cargo = 'socio' INTO v_escritorio" in v4
+# v5: leads (próxima ação obrigatória, cor de prioridade) e pós-venda; não pode travar o bot.
+v5=(ROOT/'04-banco-dados/migrations/20261118_v5_leads_posvenda.sql').read_text(encoding='utf-8')
+assert re.search(r'BEGIN\s*;',v5) and v5.count('$$') % 2 == 0 and v5.rstrip().endswith('COMMIT;')
+assert 'DROP TABLE' not in v5.upper() and 'DROP POLICY' not in v5.upper()
+assert "IF current_user = 'authenticated' THEN" in v5, 'regra de ouro só para edição direta do CRM (bot/RPCs livres)'
+assert 'CREATE OR REPLACE FUNCTION public.pode_acessar_ficha' not in v5 and 'CREATE OR REPLACE FUNCTION public.dfu_' not in v5
+assert 'ALTER COLUMN numero_cnj DROP NOT NULL' in v5 and 'prazos_cnj_obrigatorio' in v5
+leads=(CLI/'src/lib/leads.ts').read_text(encoding='utf-8')
+assert 'export function calcularTemperatura' in leads and 'export function contemDocumentoPessoal' in leads
+assert 'insert' not in leads.split('simularExemplo')[1].split('// ---------- gravação')[0], 'simulação nunca é gravada'
 # v3: o item virou "Atendimentos" (inbox bot + humano); o que importa é a rota no menu.
 assert '"/painel/atendimentos"' in (CLI/'src/components/painel/sidebar.tsx').read_text(encoding='utf-8')
 assert 'FilaFichas' in (CLI/'src/app/painel/page.tsx').read_text(encoding='utf-8'), 'Painel original de fichas deve ser preservado'

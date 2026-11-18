@@ -5,6 +5,7 @@ import { CalendarDays, FilePen, Gavel, LoaderCircle, Tag, X } from "lucide-react
 import { GerarDocumentosModal } from "@/components/documentos/gerar-documentos-modal";
 import { AREAS_JURIDICAS, isAreaJuridica } from "@/lib/advogados";
 import { formatarTelefoneBr, salvarEtiquetas, type Atendimento } from "@/lib/atendimentos";
+import { AVISO_DOCUMENTO, contemDocumentoPessoal } from "@/lib/leads";
 import { carregarHistoricoFicha, type HistoricoFicha } from "@/lib/ficha-detalhe";
 
 const fmtData = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
@@ -86,6 +87,11 @@ export function PainelCliente({
     e.preventDefault();
     const t = novaEtiqueta.trim().toLowerCase().replace(/^#/, "");
     if (!t || etiquetas.includes(t)) return;
+    // Etiquetas aparecem na lista de conversas: nada de CPF/CNPJ (LGPD).
+    if (contemDocumentoPessoal(t)) {
+      setErro(AVISO_DOCUMENTO);
+      return;
+    }
     void gravar([...etiquetas, t]);
   }
 
@@ -220,7 +226,7 @@ export function PainelCliente({
                   <li key={p.id}>
                     <p className={`truncate ${p.status === "cumprido" ? "text-slate-400 line-through" : "text-slate-700"}`}>{p.descricao_prazo}</p>
                     <p className="text-xs text-slate-500">
-                      {p.numero_cnj} · fatal {fmtData.format(dataLocal(p.data_fatal))}
+                      {p.numero_cnj ?? "Controle"} · fatal {fmtData.format(dataLocal(p.data_fatal))}
                     </p>
                   </li>
                 ))}

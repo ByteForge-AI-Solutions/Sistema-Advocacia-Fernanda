@@ -1,5 +1,15 @@
 import { supabase } from "@/lib/supabase/client";
 import { buscarEquipeVisivel, ehSocio, ehTitular, type Advogado, type MembroEquipe } from "@/lib/advogados";
+import {
+  DORES,
+  FAIXAS_DIVIDA,
+  ONDE_DIVIDA,
+  isTemperatura,
+  type DorPrincipal,
+  type FaixaDivida,
+  type OndeDivida,
+  type Temperatura,
+} from "@/lib/leads";
 
 export const PRIORIDADES = ["alta", "media", "baixa"] as const;
 export type Prioridade = (typeof PRIORIDADES)[number];
@@ -41,6 +51,21 @@ export interface Ficha {
   estagiario: { id: string; nome: string } | null;
   /** Responsável quando não é o usuário logado (estagiário ou, para sócios, outro titular). */
   responsavel: MembroEquipe | null;
+  /** Campos de lead (migração v5). Ficam vazios/false se a migração ainda não foi aplicada. */
+  lead: LeadFicha;
+}
+
+export interface LeadFicha {
+  /** false = banco sem a migração v5 (campos indisponíveis). */
+  disponivel: boolean;
+  proxima_acao: string | null;
+  proxima_acao_em: string | null;
+  faixa_divida: FaixaDivida | null;
+  bloqueio_penhora: boolean;
+  dor_principal: DorPrincipal | null;
+  onde_divida: OndeDivida[];
+  /** Calculada pelo banco (crm_temperatura_lead). */
+  temperatura: Temperatura | null;
 }
 
 interface FichaRow {
@@ -56,6 +81,33 @@ interface FichaRow {
   advogado_id: string | null;
   status_atendimento: string | null;
   created_at: string;
+  proxima_acao?: string | null;
+  proxima_acao_em?: string | null;
+  faixa_divida?: string | null;
+  bloqueio_penhora?: boolean | null;
+  dor_principal?: string | null;
+  onde_divida?: string[] | null;
+  temperatura?: string | null;
+}
+
+const COLUNAS_BASE =
+  "id, nome_cliente, telefone, area_identificada, prioridade, motivo_prioridade, resumo_fatos, documentos_urls, processos_encontrados, advogado_id, status_atendimento, created_at";
+const COLUNAS_LEAD = "proxima_acao, proxima_acao_em, faixa_divida, bloqueio_penhora, dor_principal, onde_divida, temperatura";
+
+const daLista = <T extends string>(lista: readonly T[], v: unknown): T | null =>
+  typeof v === "string" && (lista as readonly string[]).includes(v) ? (v as T) : null;
+
+function paraLead(row: FichaRow, disponivel: boolean): LeadFicha {
+  return {
+    disponivel,
+    proxima_acao: row.proxima_acao ?? null,
+    proxima_acao_em: row.proxima_acao_em ?? null,
+    faixa_divida: daLista(FAIXAS_DIVIDA, row.faixa_divida),
+    bloqueio_penhora: row.bloqueio_penhora === true,
+    dor_principal: daLista(DORES, row.dor_principal),
+    onde_divida: (row.onde_divida ?? []).flatMap((o) => (daLista(ONDE_DIVIDA, o) ? [o as OndeDivida] : [])),
+    temperatura: isTemperatura(row.temperatura) ? row.temperatura : null,
+  };
 }
 
 /** "Média", "MEDIA", " media " → "media". O bot pode gravar com acento ou maiúscula. */
@@ -79,10 +131,27 @@ function paraStatus(valor: string | null): StatusAtendimento | null {
 }
 
 const PESO_PRIORIDADE: Record<Prioridade, number> = { alta: 0, media: 1, baixa: 2 };
+/** Urgente acima de tudo; quente/morno/frio se alinham a alta/média/baixa do bot. */
+const PESO_TEMPERATURA: Record<Temperatura, number> = { urgente: 0, quente: 1, morno: 2, frio: 3 };
 
-/** Fila: alta → média → baixa (desconhecida por último); empate pela chegada, mais antiga primeiro. */
+/**
+ * Nível de atendimento (menor = antes). Com a temperatura do lead (migração v5) ela manda;
+ * sem ela, vale a prioridade do bot (alta → 1, média → 2, baixa → 3). Desconhecida: 4.
+ */
+export function nivelAtendimento(f: Pick<Ficha, "prioridade" | "lead">): number {
+  if (f.lead.temperatura) return PESO_TEMPERATURA[f.lead.temperatura];
+  return f.prioridade ? PESO_PRIORIDADE[f.prioridade] + 1 : 4;
+}
+
+/**
+ * Fila: nível de atendimento (urgente → quente/alta → morno/média → frio/baixa → desconhecida);
+ * empate pela prioridade do bot e depois pela chegada, mais antiga primeiro.
+ */
 export function ordenarFila(fichas: Ficha[]): Ficha[] {
   return [...fichas].sort((a, b) => {
+    const na = nivelAtendimento(a);
+    const nb = nivelAtendimento(b);
+    if (na !== nb) return na - nb;
     const pa = a.prioridade ? PESO_PRIORIDADE[a.prioridade] : 3;
     const pb = b.prioridade ? PESO_PRIORIDADE[b.prioridade] : 3;
     if (pa !== pb) return pa - pb;
@@ -103,17 +172,23 @@ export async function buscarFichas(perfil: Advogado): Promise<Ficha[]> {
   const idsResponsaveis = equipe.map((m) => m.id);
 
   // CPF fica fora da listagem (minimização de dados, LGPD).
-  let consulta = supabase
-    .from("fichas_clientes")
-    .select(
-      "id, nome_cliente, telefone, area_identificada, prioridade, motivo_prioridade, resumo_fatos, documentos_urls, processos_encontrados, advogado_id, status_atendimento, created_at",
-    );
-  if (!ehSocio(perfil)) {
-    consulta = ehTitular(perfil.cargo)
-      ? consulta.or(`advogado_id.in.(${idsResponsaveis.join(",")}),advogado_id.is.null`)
-      : consulta.in("advogado_id", idsResponsaveis);
+  const consultar = (colunas: string) => {
+    let consulta = supabase.from("fichas_clientes").select(colunas);
+    if (!ehSocio(perfil)) {
+      consulta = ehTitular(perfil.cargo)
+        ? consulta.or(`advogado_id.in.(${idsResponsaveis.join(",")}),advogado_id.is.null`)
+        : consulta.in("advogado_id", idsResponsaveis);
+    }
+    return consulta.overrideTypes<FichaRow[], { merge: false }>();
+  };
+
+  let leadDisponivel = true;
+  let { data, error } = await consultar(`${COLUNAS_BASE}, ${COLUNAS_LEAD}`);
+  if (error?.code === "42703") {
+    // Banco ainda sem a migração v5: a fila continua funcionando sem os campos de lead.
+    leadDisponivel = false;
+    ({ data, error } = await consultar(COLUNAS_BASE));
   }
-  const { data, error } = await consulta.overrideTypes<FichaRow[], { merge: false }>();
 
   if (error) throw new Error(error.message);
 
@@ -132,6 +207,7 @@ export async function buscarFichas(perfil: Advogado): Promise<Ficha[]> {
     status_original: row.status_atendimento ?? "novo",
     created_at: row.created_at,
     ...vinculo(row.advogado_id, perfil.id, membroPorId),
+    lead: paraLead(row, leadDisponivel),
   }));
 
   return ordenarFila(fichas);

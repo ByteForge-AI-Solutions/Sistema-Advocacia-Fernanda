@@ -24,6 +24,7 @@ import {
   type Conversa,
   type MembroDestino,
 } from "@/lib/atendimentos";
+import { contemDocumentoPessoal } from "@/lib/leads";
 import { supabase } from "@/lib/supabase/client";
 
 /**
@@ -192,6 +193,14 @@ export default function ConversasBotPage() {
 
   async function aoEnviar(texto: string, modo: "resposta" | "nota"): Promise<boolean> {
     if (!atual || !perfil) return false;
+    // LGPD: notas ficam no histórico da equipe; CPF/CNPJ pertence à ficha, não ao texto livre.
+    if (
+      modo === "nota" &&
+      contemDocumentoPessoal(texto) &&
+      !confirm("A nota parece conter CPF ou CNPJ. Prefira registrar o documento na ficha do cliente. Salvar mesmo assim?")
+    ) {
+      return false;
+    }
     return modo === "nota"
       ? executar(() => criarNota(atual.telefone, perfil.id, texto), "Nota interna salva.")
       : executar(() => responder(atual.telefone, texto), "Resposta enviada para a fila do WhatsApp.");

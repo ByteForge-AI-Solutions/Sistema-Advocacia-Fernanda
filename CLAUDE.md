@@ -46,8 +46,25 @@ Ficha estruturada gerada pela IA ao fim da triagem.
 | `advogado_id` | UUID FK → `advogados.id` | Responsável atribuído pelo roteamento |
 | `status_atendimento` | TEXT | `'novo'` (padrão), `'em_analise'`, `'agendado'` ou `'finalizado'` |
 | `created_at` | TIMESTAMPTZ | |
+| `proxima_acao` / `proxima_acao_em` | TEXT (≤ 280) / TIMESTAMPTZ | Migração v5. **Regra de ouro:** lead ativo (status ≠ `finalizado`) não é salvo sem as duas. O trigger `crm_fichas_lead` cobra isso só em edição direta do CRM (`current_user = 'authenticated'`); bot e RPCs `SECURITY DEFINER` passam. O texto recusa CPF/CNPJ |
+| `faixa_divida` | TEXT | v5: `'ate_50k'`, `'50k_100k'`, `'100k_500k'` ou `'acima_500k'`. Só a faixa, nunca o valor exato (LGPD) |
+| `bloqueio_penhora` | BOOLEAN | v5: bloqueio de conta, penhora ou citação recebida. Quando verdadeiro, o lead é urgente |
+| `dor_principal` | TEXT | v5: `'certidao'`, `'bens'`, `'execucao'`, `'parcelamento'` ou `'outra'` |
+| `onde_divida` | TEXT[] | v5: subconjunto de `receita`, `pgfn`, `estado`, `municipio` e `justica` |
+| `temperatura` | TEXT | v5, **calculada pelo banco** (`crm_temperatura_lead`): `'urgente'`, `'quente'`, `'morno'`, `'frio'` ou NULL (não qualificado). O espelho em `src/lib/leads.ts` (`calcularTemperatura`) precisa ficar igual |
 
-No CRM, a fila de cada advogado é ordenada por `prioridade` (alta → média → baixa) e depois por `created_at`, da mais antiga para a mais nova. Como `prioridade` é TEXT, ordene com um mapeamento explícito, não alfabeticamente. Essa lógica está em `ordenarFila` (`03-crm-frontend/src/lib/fichas.ts`), que também normaliza variações como `'Média'`/`'MEDIA'`.
+Fila do CRM (`ordenarFila` em `03-crm-frontend/src/lib/fichas.ts`):
+- **Ordem:** primeiro pelo **nível de atendimento**. Urgente vem antes de tudo; quente vale o mesmo que alta, morno o mesmo que média e frio o mesmo que baixa. Sem temperatura, vale a `prioridade` do bot. Depois, por `prioridade` e por `created_at`, da mais antiga para a mais nova.
+- Como `prioridade` é TEXT, ordene com um mapeamento explícito, não alfabeticamente. A função também normaliza variações como `'Média'`/`'MEDIA'`.
+- `buscarFichas` lê os campos v5 e, se a migração não estiver aplicada (`42703`), refaz a consulta sem eles. Nesse caso `lead.disponivel = false` e a tela esconde o que é de lead.
+
+Regras de cor, conforme o documento "CRM de leads de anúncio", seção 4:
+- **Urgente:** bloqueio ou penhora.
+- **Quente:** acima de R$ 100 mil e dor de certidão, bens ou execução.
+- **Morno:** acima de R$ 100 mil sem urgência. Também entra aqui o caso de até R$ 100 mil **com** dor urgente, que o documento não define.
+- **Frio:** até R$ 100 mil sem urgência.
+- **Ajuste:** dívida só na Receita e sem urgência desce uma cor.
+- **Ainda não implementado:** o ajuste "respondeu em menos de 1 h sobe uma cor".
 
 **RLS:** a função `pode_acessar_ficha(responsavel_id)` decide o acesso. A versão em vigor é a da migração `20261118_v4_cargo_socio.sql`; a seção 5 do `schema.sql` tem a versão antiga.
 - **Sócio:** vê e edita as fichas de todo o escritório, exceto as de contas `desenvolvedor`, e pode delegar para qualquer titular ou estagiário.
@@ -110,10 +127,12 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
   2. `20261118_bot_unificado.sql` (bot v2.1: tabelas `dfu_*`, trigger `dfu_prevenir_sobreposicao_agenda`);
   3. `20261118_v3_crm_modulos.sql`;
   4. `20261118_v4_cargo_socio.sql`: cargo `socio`, nova `pode_acessar_ficha` e sócios no rodízio do bot. Ela redefine `dfu_ofertar`, `dfu_criar_ficha` e `dfu_confirmar`, cópias literais em que só muda o filtro de cargo. **Se a migração do bot for reaplicada, reaplique a v4 depois.**
+  5. `20261118_v5_leads_posvenda.sql`: campos de lead em `fichas_clientes` (próxima ação, qualificação, temperatura) e categorias de pós-venda em `processos_prazos`. Não cria políticas novas, não redefine `pode_acessar_ficha` e não toca nas funções `dfu_*`.
 - **Hashes:** `01-agentes-ia/tests/check_integration.py` confere o SHA-256 de 8 arquivos: `advogados.ts`, `agenda.ts`, `disponibilidade.ts`, `fichas.ts`, `auth-provider.tsx`, `reuniao-modal.tsx`, `app/painel/page.tsx` e `schema.sql`.
   - **Não edite esses arquivos.** Crie funcionalidade em arquivos novos. Se a mudança for inevitável, atualize o hash no teste e avise a equipe do bot.
   - O hash ignora a diferença CRLF/LF.
   - Na v4 (18/11/2026), `advogados.ts`, `agenda.ts`, `fichas.ts`, `reuniao-modal.tsx` e `app/painel/page.tsx` foram alterados de propósito para o cargo `socio`, e os hashes foram renovados.
+  - Na v5, só `fichas.ts` mudou (campos de lead e ordenação por cor), e o hash foi renovado.
   - Para rodar o teste no Windows: `py 01-agentes-ia/tests/check_integration.py`.
   - A última asserção falha enquanto existir `03-crm-frontend/.env.local`. Ela confere o pacote de entrega; na máquina de desenvolvimento, rode o teste numa cópia feita com `git ls-files -co --exclude-standard`.
 - **Escrita nas `dfu_*`:** o CRM nunca escreve direto nelas. Usa as RPCs `crm_atendimento_*` (assumir, responder, transferir, devolver_bot, encerrar, etiquetas). Também chama a original `dfu_assumir_atendimento` no caso padrão.
@@ -122,6 +141,26 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
 - **Transferência:** o destino pode ser um titular ativo (advogado ou sócio) ou um estagiário que a pessoa supervisiona; o sócio pode transferir para qualquer estagiário.
 - **Notas internas:** ficam em `dfu_notas_internas`, sem UPDATE/DELETE. `sistema = true` marca o registro automático das ações.
 - **Prazos:** `processos_prazos` (RLS via `pode_acessar_ficha`). Estagiário não exclui; titular, sócio e desenvolvedor excluem. A data fatal é `date`: use `dataLocal()` para não deslocar o fuso.
+- **Pós-venda (v5):** `processos_prazos.categoria`, definida em `CATEGORIA_INFO` (`src/lib/prazos.ts`):
+
+  | Categoria | CNJ | Alerta | Observação |
+  |---|---|---|---|
+  | `processual` | obrigatório | 2 dias antes | prazo comum |
+  | `execucao_fiscal` | obrigatório | 2 dias antes | 5 dias após a citação |
+  | `embargos` | obrigatório | 5 dias antes | 30 dias após a garantia |
+  | `parcela` | opcional | 5 dias antes | exige `acordo_ref`, `parcela_numero` e `parcela_total` |
+  | `certidao` | opcional | 15 dias antes | validade de 180 dias |
+  | `outro` | opcional | 2 dias antes | |
+
+  - A janela de "urgente" de `urgenciaDoPrazo` segue a categoria.
+  - `gerarParcelas` cria as parcelas mensais de uma vez.
+  - `resumirAcordos` marca risco de rescisão com 3 parcelas seguidas ou 6 alternadas em atraso.
+  - Valores de parcela não são gravados.
+- **LGPD em textos livres:**
+  - `contemDocumentoPessoal` (`src/lib/leads.ts`) detecta CPF/CNPJ válido, com ou sem pontuação.
+  - Bloqueia o salvamento em: próxima ação, campos de prazo e etiquetas.
+  - Em notas internas, pede confirmação.
+- **Simulação (OAB):** `simularExemplo` roda só no navegador, nunca é gravada e sempre aparece como "exemplo" ("até", "depende da análise"). Não envie valores ou percentuais por escrito ao cliente.
 - **Google Calendar (preparação):**
   - colunas `google_*` e `link_reuniao` em `agenda_advogados`;
   - fila `agenda_google_fila`, alimentada pelo trigger `crm_agenda_google_sync` apenas para advogados com `agenda_google_contas.ativo`;
@@ -192,6 +231,8 @@ Organização:
 - `src/lib/advogados.ts`: tipos `Advogado`/`Cargo`/`AreaJuridica`, rótulos das áreas, `validarPerfil` e `buscarPerfilPorEmail`.
 - `src/components/auth-provider.tsx`: contexto de autenticação (`useAuth()` → `estado`, `perfil`, `entrar`, `sair`). O perfil vindo de `advogados` fica disponível para todo o app.
 - `src/lib/fichas.ts`: tipos `Ficha`/`Prioridade`/`StatusAtendimento`, `ordenarFila` e `buscarFichas(perfil)`, que aplica a regra titular/estagiário. CPF não é carregado na listagem (LGPD).
+- `src/lib/leads.ts` (v5): qualificação, `calcularTemperatura`, `TEMPERATURA_INFO` (cores), `situacaoProximaAcao`, `contemDocumentoPessoal`/`mascararDocumento`, `simularExemplo` e `salvarLead`.
+- `src/components/fichas/editar-lead-modal.tsx` (v5): botão "Editar lead" no cartão. Edita status, próxima ação (obrigatória), qualificação com prévia da cor e a simulação de exemplo. Não mostra nem edita CPF.
 - `src/components/fichas/`: `badges.tsx` (cores de prioridade e status e a etiqueta "Sob supervisão - Nome"), `ficha-card.tsx` e `fila-fichas.tsx` (filtros por status e resumo por prioridade).
 - `src/components/esqueci-senha-modal.tsx`: modal que chama `resetPasswordForEmail` com `redirectTo` apontando para `/redefinir-senha`.
 - `src/lib/agenda.ts`: interface `AgendaAdvogado` (espelho da tabela) e `EventoAgenda` (+ estagiário). `buscarAgenda(perfil)` aplica a regra titular/estagiário e ordena por `data_hora_inicio` crescente.

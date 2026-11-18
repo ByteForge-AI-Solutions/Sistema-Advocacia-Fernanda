@@ -6,7 +6,7 @@ import { AREAS_JURIDICAS, isAreaJuridica } from "@/lib/advogados";
 import { eventoCancelado, type EventoAgenda } from "@/lib/agenda";
 import { chaveDia, fmtHora } from "@/lib/datas";
 import { paraPrioridade } from "@/lib/fichas";
-import { urgenciaDoPrazo, type PrazoProcessual } from "@/lib/prazos";
+import { CATEGORIA_INFO, identificacaoPrazo, urgenciaDoPrazo, type PrazoProcessual } from "@/lib/prazos";
 
 const DIAS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const MAX_POR_DIA = 3;
@@ -50,7 +50,7 @@ onAbrirPrazo: (p: PrazoProcessual) => void;
       <button
         type="button"
         onClick={() => onAbrirPrazo(p)}
-        title={`Prazo fatal: ${p.descricao_prazo} — ${p.numero_cnj}`}
+        title={`${CATEGORIA_INFO[p.categoria].label}: ${p.descricao_prazo} — ${identificacaoPrazo(p)}`}
         className={`flex w-full items-center gap-1 rounded px-1.5 py-0.5 text-left text-[11px] font-semibold transition ${
           u === "vencido" || u === "hoje" || u === "urgente"
             ? "bg-red-600 text-white hover:bg-red-700"
@@ -59,7 +59,7 @@ onAbrirPrazo: (p: PrazoProcessual) => void;
       >
         <Gavel className="size-3 shrink-0" aria-hidden />
         <span className="truncate">
-          {compacto ? "Prazo: " : "Prazo fatal: "}
+          {p.categoria === "parcela" ? "Parcela: " : p.categoria === "certidao" ? "Certidão: " : compacto ? "Prazo: " : "Prazo fatal: "}
           {p.descricao_prazo}
           {!compacto && p.ficha ? ` · ${p.ficha.nome_cliente}` : ""}
         </span>

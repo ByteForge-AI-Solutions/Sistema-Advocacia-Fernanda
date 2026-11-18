@@ -23,7 +23,8 @@ export interface ReuniaoHistorico {
 
 export interface PrazoHistorico {
   id: string;
-  numero_cnj: string;
+  /** Opcional em parcelas e certidões (migração v5). */
+  numero_cnj: string | null;
   descricao_prazo: string;
   data_fatal: string;
   status: string;

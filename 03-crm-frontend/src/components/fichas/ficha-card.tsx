@@ -1,7 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Clock, FilePen, Gavel, Paperclip, Phone, CircleAlert, LoaderCircle, UserRoundCheck } from "lucide-react";
+import {
+  CalendarClock,
+  ChevronDown,
+  ChevronUp,
+  CircleAlert,
+  Clock,
+  FilePen,
+  Gavel,
+  LoaderCircle,
+  Paperclip,
+  Pencil,
+  Phone,
+  UserRoundCheck,
+} from "lucide-react";
+import { EditarLeadModal } from "@/components/fichas/editar-lead-modal";
+import { TEMPERATURA_INFO, situacaoProximaAcao } from "@/lib/leads";
 import { GerarDocumentosModal } from "@/components/documentos/gerar-documentos-modal";
 import { assumirFicha, type Ficha } from "@/lib/fichas";
 import {
@@ -39,6 +54,11 @@ function formatarTelefone(telefone: string): string {
   return m ? `+55 (${m[1]}) ${m[2]}-${m[3]}` : telefone;
 }
 
+/** Mesmo critério do trigger crm_fichas_lead: só "finalizado" deixa de ser lead ativo. */
+function finalizadaStatus(statusOriginal: string): boolean {
+  return statusOriginal.trim().toLowerCase() === "finalizado";
+}
+
 function plural(n: number, singular: string, pluralForm: string) {
   return `${n} ${n === 1 ? singular : pluralForm}`;
 }
@@ -52,7 +72,12 @@ export function FichaCard({ ficha, podeAssumir = false, onAlterada }: { ficha: F
   const [documentosAberto, setDocumentosAberto] = useState(false);
   const [assumindo, setAssumindo] = useState(false);
   const [erroAssumir, setErroAssumir] = useState<string | null>(null);
+  const [editando, setEditando] = useState(false);
   const semResponsavel = ficha.advogado_id === null;
+  const temperatura = ficha.lead.temperatura ? TEMPERATURA_INFO[ficha.lead.temperatura] : null;
+  const acao = ficha.lead.disponivel
+    ? situacaoProximaAcao({ proxima_acao_em: ficha.lead.proxima_acao_em, ativo: !finalizadaStatus(ficha.status_original) })
+    : null;
 
   function assumir() {
     setAssumindo(true);
@@ -69,7 +94,12 @@ export function FichaCard({ ficha, podeAssumir = false, onAlterada }: { ficha: F
     );
   }
   const resumoLongo = ficha.resumo_fatos.length > LIMITE_RESUMO;
-  const faixa = ficha.prioridade ? PRIORIDADE_ESTILO[ficha.prioridade].faixa : "bg-slate-300";
+  // A faixa lateral segue a cor do lead (urgente/quente/morno/frio) quando ele já foi qualificado.
+  const faixa = ficha.lead.temperatura
+    ? TEMPERATURA_INFO[ficha.lead.temperatura].ponto
+    : ficha.prioridade
+      ? PRIORIDADE_ESTILO[ficha.prioridade].faixa
+      : "bg-slate-300";
   const finalizada = ficha.status === "finalizado";
 
   return (
@@ -90,6 +120,15 @@ export function FichaCard({ ficha, podeAssumir = false, onAlterada }: { ficha: F
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-1.5 sm:justify-end">
+            {temperatura && (
+              <span
+                title={`${temperatura.regra}. ${temperatura.acao}`}
+                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${temperatura.badge}`}
+              >
+                <span className={`size-2 rounded-full ${temperatura.ponto}`} aria-hidden />
+                {temperatura.label}
+              </span>
+            )}
             <PrioridadeBadge prioridade={ficha.prioridade} />
             <StatusBadge status={ficha.status} original={ficha.status_original} />
           </div>
@@ -108,6 +147,34 @@ export function FichaCard({ ficha, podeAssumir = false, onAlterada }: { ficha: F
               Assumir ficha
             </button>
             {erroAssumir && <p role="alert" className="w-full text-xs text-red-700">{erroAssumir}</p>}
+          </div>
+        )}
+
+        {acao && (
+          <div
+            className={`mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-3 py-2 text-sm ${
+              acao === "vencida"
+                ? "bg-red-50 text-red-800 ring-1 ring-inset ring-red-200"
+                : acao === "sem"
+                  ? "bg-amber-50 text-amber-900 ring-1 ring-inset ring-amber-200"
+                  : acao === "hoje"
+                    ? "bg-navy-50 text-navy-900"
+                    : "bg-slate-50 text-slate-700"
+            }`}
+          >
+            <CalendarClock className="size-4 shrink-0" aria-hidden />
+            {acao === "sem" ? (
+              <span className="flex-1">
+                <strong>Sem próxima ação.</strong> Defina o próximo passo para este lead não se perder.
+              </span>
+            ) : (
+              <span className="min-w-0 flex-1">
+                <strong>
+                  {acao === "vencida" ? "Próxima ação vencida" : acao === "hoje" ? "Hoje" : "Próxima ação"}
+                </strong>{" "}
+                · {formatoData.format(new Date(ficha.lead.proxima_acao_em!))} — {ficha.lead.proxima_acao}
+              </span>
+            )}
           </div>
         )}
 
@@ -167,16 +234,36 @@ export function FichaCard({ ficha, podeAssumir = false, onAlterada }: { ficha: F
               {plural(ficha.qtd_processos, "processo encontrado", "processos encontrados")}
             </span>
           )}
+          {ficha.lead.disponivel && (
+            <button
+              type="button"
+              onClick={() => setEditando(true)}
+              className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 transition hover:bg-navy-50"
+            >
+              <Pencil className="size-3.5" aria-hidden />
+              Editar lead
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setDocumentosAberto(true)}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 transition hover:bg-navy-50"
+            className={`${ficha.lead.disponivel ? "" : "ml-auto "}inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 transition hover:bg-navy-50`}
           >
             <FilePen className="size-3.5" aria-hidden />
             Gerar documentos
           </button>
         </footer>
         {documentosAberto && <GerarDocumentosModal fichaId={ficha.id} onFechar={() => setDocumentosAberto(false)} />}
+        {editando && (
+          <EditarLeadModal
+            ficha={ficha}
+            onFechar={() => setEditando(false)}
+            onSalvo={() => {
+              setEditando(false);
+              onAlterada?.();
+            }}
+          />
+        )}
       </div>
     </article>
   );
