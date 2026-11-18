@@ -1,0 +1,379 @@
+{
+  "name": "DFU | Importador CSV opcional (SEM disparo comercial)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "f8b02b67-ca94-55dd-a0bf-0082377e6d78",
+      "name": "WF | Execução manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ $env.CSV_PLANILHA1 || \"/files/Planilha1.csv\" }}",
+        "options": {}
+      },
+      "id": "6fd0d03f-bb35-5fa1-a359-641820fb437c",
+      "name": "WF01 | Ler Planilha1",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        230,
+        90
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ $env.CSV_UNIFICADO || \"/files/unificado.csv\" }}",
+        "options": {}
+      },
+      "id": "ffafe765-abfa-5be2-97ba-92f46c06d5a6",
+      "name": "WF01 | Ler unificado",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        230,
+        390
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// WF01 | Identificar origem A: regra de negócio documentada.\nreturn $input.all().map(i=>({json:{origem:'planilha1'},binary:i.binary}));"
+      },
+      "id": "916cb6e2-82bc-50a2-8caf-d33af0939914",
+      "name": "WF01 | Identificar origem A",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        90
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// WF01 | Identificar origem B: regra de negócio documentada.\nreturn $input.all().map(i=>({json:{origem:'unificado'},binary:i.binary}));"
+      },
+      "id": "96d4b4b7-51fe-5723-898c-10dbea56f597",
+      "name": "WF01 | Identificar origem B",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        390
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "483b66ce-9855-5b4c-b5de-443f3ce95759",
+      "name": "WF01 | Unir arquivos",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        640,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// WF01 | Validar normalizar e agrupar: regra de negócio documentada.\n// Executa uma vez para todos os itens; não envia mensagens. Parse de CSV com aspas escapadas, BOM e CRLF.\nconst files=$input.all();const digits=s=>String(s??'').replace(/\\D/g,'');const clean=s=>String(s??'').trim().replace(/\\s+/g,' ');const DDD=new Set('11 12 13 14 15 16 17 18 19 21 22 24 27 28 31 32 33 34 35 37 38 41 42 43 44 45 46 47 48 49 51 53 54 55 61 62 63 64 65 66 67 68 69 71 73 74 75 77 79 81 82 83 84 85 86 87 88 89 91 92 93 94 95 96 97 98 99'.split(' '));\nfunction parse(s){s=s.replace(/^\\uFEFF/,'');let rows=[],r=[],v='',quoted=false;for(let i=0;i<s.length;i++){let c=s[i];if(c==='\"'){if(quoted&&s[i+1]==='\"'){v+='\"';i++;}else quoted=!quoted;}else if(c===';'&&!quoted){r.push(v);v='';}else if((c==='\\n'||c==='\\r')&&!quoted){if(c==='\\r'&&s[i+1]==='\\n')i++;r.push(v);if(r.some(t=>t.trim()))rows.push(r);r=[];v='';}else v+=c;}if(v||r.length){r.push(v);if(r.some(t=>t.trim()))rows.push(r);}return rows;}\nfunction docValid(n){if(![11,14].includes(n.length)||/^(\\d)\\1+$/.test(n))return false;const part=(t,weights)=>{let s=0;for(let i=0;i<weights.length;i++)s+=Number(t[i])*weights[i];const m=s%11;return m<2?0:11-m;};if(n.length===11)return +n[9]===part(n.slice(0,9),[10,9,8,7,6,5,4,3,2])&&+n[10]===part(n.slice(0,10),[11,10,9,8,7,6,5,4,3,2]);const a=[5,4,3,2,9,8,7,6,5,4,3,2],b=[6,...a];return +n[12]===part(n.slice(0,12),a)&&+n[13]===part(n.slice(0,13),b);}\nfunction cnjValid(s){if(s.length!==20)return false;const z=s.slice(0,7)+s.slice(9)+'00';try{return Number(s.slice(7,9))===98-Number(BigInt(z)%97n);}catch{return false;}}\nfunction phone(v){let p=digits(v);if(p.length>=12&&p.startsWith('55'))p=p.slice(2);const d=p.slice(0,2);if(!DDD.has(d))return {status:p?'INVALIDO':'AUSENTE',value:null};if(p.length===11&&p[2]==='9')return {status:'VALIDO',value:'+55'+p};if(p.length===10&&/[6-9]/.test(p[2]))return {status:'AMBIGUO',value:null};return {status:'INVALIDO',value:null};}\nfunction date(v){v=clean(v).toLowerCase();let m=v.match(/^(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})$/);let day,mon,year;if(m){day=+m[1];mon=+m[2];year=+m[3];}else{m=v.match(/^(\\d{1,2})\\s+(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\\.?\\s+(\\d{4})$/);if(!m)return null;day=+m[1];mon=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'].indexOf(m[2])+1;year=+m[3];}let d=new Date(Date.UTC(year,mon-1,day));return d.getUTCFullYear()===year&&d.getUTCMonth()===mon-1&&d.getUTCDate()===day?d.toISOString().slice(0,10):null;}\nfunction title(v){return clean(v).toLowerCase().replace(/(^|\\s)[\\p{L}]/gu,t=>t.toUpperCase()).replace(/\\b(ltda|me|eireli)\\b/gi,t=>t.toUpperCase());}\nlet leads=[],reviews=[],seen=new Set(),processes=new Map(),phones=new Map(),stats={planilha1:0,unificado:0,vazias_unificado:0,validos:0,duplicados:0,reserva:0,revisao:{}};for(let f=0;f<files.length;f++){let item=files[f],origin=item.json.origem;const buffer=await this.helpers.getBinaryDataBuffer(f,'data');const raw=buffer.toString('utf8');let rows=parse(raw),headers=[];if(origin==='unificado'){const allLines=raw.replace(/^\\uFEFF/,'').split(/\\r?\\n/);stats.vazias_unificado+=allLines.slice(1).filter(l=>l.trim()&&!l.replace(/;/g,'').trim()).length;headers=rows.shift().map(clean);}for(let j=0;j<rows.length;j++){let row=rows[j];if(row.every(x=>!clean(x)))continue;stats[origin]++;const a=origin==='planilha1'?{Tipo:row[0],'CPF/CNPJ':row[1],'Data Da Distribuicao':row[2],Cliente:row[3],Empresa:row[4],'Polo Ativo':row[5],'Numero Processo':row[6],Tribunal:row[7],'Valor Causa':row[8],'Classe Judicial':row[9],Email:row[10],Telefone:row[11]}:Object.fromEntries(headers.map((h,k)=>[h,row[k]||'']));const doc=digits(a['CPF/CNPJ']),p=digits(a['Numero Processo']),ph=phone(a.Telefone);const dt=date(a['Data Da Distribuicao']);const rawval=clean(a['Valor Causa']).replace(/R\\$/gi,'').replace(/\\s/g,'').replace(/\\./g,'').replace(',','.');const val=/^\\d+(\\.\\d{1,2})?$/.test(rawval)?Number(rawval):null;const juridica=doc.length===14;const tipo=juridica?'JURIDICA':'FISICA';let motivos=[];if(!docValid(doc))motivos.push('CPF_CNPJ_INVALIDO');if(!cnjValid(p))motivos.push('PROCESSO_INVALIDO');if(origin==='planilha1'&&((/jur/i.test(a.Tipo)&&!juridica)||(/f[ií]s/i.test(a.Tipo)&&juridica)))motivos.push('TIPO_DIVERGENTE');if(ph.status!=='VALIDO')motivos.push('TELEFONE_'+ph.status);if(!dt)motivos.push('DATA_INVALIDA');if(val===null)motivos.push('VALOR_INVALIDO');let email=clean(a.Email).toLowerCase();if(email&&!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))email=null;const nome=title(a.Cliente);const empresa=juridica?title(origin==='planilha1'?a.Empresa:a.Cliente):null;const polo=clean(a['Polo Ativo']);const classe=clean(a['Classe Judicial']);const record={origem:origin,linha_origem:j+(origin==='unificado'?2:1),tipo_pessoa:tipo,nome,nome_exibicao:nome,empresa,cpf_cnpj:doc,telefone_e164:ph.value,telefone_status:ph.status,email,numero_processo:p,numero_processo_fmt:p.length===20?p.replace(/^(\\d{7})(\\d{2})(\\d{4})(\\d)(\\d{2})(\\d{4})$/,'$1-$2.$3.$4.$5.$6'):p,tribunal:clean(a.Tribunal),classe_judicial:/execu[cç][aã]o fiscal/i.test(classe)?'Execução Fiscal':classe,polo_ativo:/uni[aã]o.*fazenda nacional/i.test(polo)?'União Federal (Fazenda Nacional)':polo,valor_causa:val,data_distribuicao:dt,status_contato:'NOVO_CONTATO',reserva:false,dados_brutos:{...a,pessoa_identificada:origin==='planilha1'||!juridica}};const key=doc+'|'+p+'|'+ph.value;const proc=processes.get(p);if(proc&&(proc.tribunal!==record.tribunal||proc.valor_causa!==val||proc.data_distribuicao!==dt))motivos.push('PROCESSO_DIVERGENTE');else if(!proc)processes.set(p,{tribunal:record.tribunal,valor_causa:val,data_distribuicao:dt});if(ph.value){const other=phones.get(ph.value);if(other&&other!==doc)motivos.push('TELEFONE_DOCUMENTOS_DIFERENTES');else phones.set(ph.value,doc);}if(seen.has(key)){stats.duplicados++;continue;}seen.add(key);if(motivos.length){for(const m of motivos)stats.revisao[m]=(stats.revisao[m]||0)+1;reviews.push({origem:origin,linha_origem:record.linha_origem,motivo:motivos.join(','),dados_brutos:record});continue;}const taken=leads.filter(x=>x.numero_processo===p&&!x.reserva).length;if(taken>=Number($env.MAX_CONTATOS_POR_PROCESSO||1)){record.reserva=true;stats.reserva++;}leads.push(record);stats.validos++;}}\n// Emite lotes separados para leads e revisões; resposta resumida deve ser verificada com contagens no Supabase.\nconst all=[];for(const [tipo,arr] of [['leads',leads],['revisao_leads',reviews]])for(let i=0;i<arr.length;i+=200)all.push({json:{tipo,lote:arr.slice(i,i+200),estatisticas:stats}});if(!all.length)all.push({json:{tipo:'vazio',lote:[],estatisticas:stats}});return all;"
+      },
+      "id": "e35a20cf-dbb4-504c-87bf-bd995c67466e",
+      "name": "WF01 | Validar normalizar e agrupar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        850,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "f9cef578-df24-4235-8464-acb902486983",
+              "leftValue": "={{ $json.tipo === 'leads' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      },
+      "id": "f170a530-754a-5b72-b5f8-26f6578f910d",
+      "name": "WF01 | Lote de leads?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1090,
+        190
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.SUPABASE_URL || \"https://CONFIGURAR.supabase.co\") + \"/rest/v1/dfu_origens\" }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "timeout": 30000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=representation"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "on_conflict",
+              "value": "cpf_cnpj,numero_processo,telefone_e164"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.lote) }}"
+      },
+      "id": "1cf31d46-ed16-5179-af24-33fbc24fd066",
+      "name": "WF01 | Inserir leads sem sobrescrever",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1350,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.SUPABASE_URL || \"https://CONFIGURAR.supabase.co\") + \"/rest/v1/dfu_revisoes\" }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "timeout": 30000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.lote) }}"
+      },
+      "id": "9981389e-bc18-52d4-bf8d-d9a4d8cd4b1a",
+      "name": "WF01 | Inserir revisões",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1350,
+        390
+      ]
+    },
+    {
+      "parameters": {
+        "content": "IMPORTADOR OPCIONAL (não é outro bot): popula dfu_origens/dfu_revisoes. Nunca dispara WhatsApp. Não há opt-in por constar de planilha. Configure CSV_PLANILHA1 e CSV_UNIFICADO, credenciais Supabase e teste primeiro com dados fictícios.",
+        "width": 420,
+        "height": 210
+      },
+      "id": "b6578f4d-6bb9-503f-9576-004cc3ddd1ff",
+      "name": "⚠ CONFIGURAR: Configure CSV_PLANILHA1 e CSV_UNIFICADO como caminho",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        320,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "38e3bbd7-83d3-4076-8788-f7f9677bfba3",
+              "leftValue": "={{ $json.tipo === 'revisao_leads' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      },
+      "id": "c9543b23-336f-4468-a0c2-979ade71844e",
+      "name": "WF01 | Lote de revisão?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1150,
+        430
+      ]
+    }
+  ],
+  "connections": {
+    "WF | Execução manual": {
+      "main": [
+        [
+          {
+            "node": "WF01 | Ler Planilha1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "WF01 | Ler unificado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF01 | Ler Planilha1": {
+      "main": [
+        [
+          {
+            "node": "WF01 | Identificar origem A",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF01 | Ler unificado": {
+      "main": [
+        [
+          {
+            "node": "WF01 | Identificar origem B",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF01 | Identificar origem A": {
+      "main": [
+        [
+          {
+            "node": "WF01 | Unir arquivos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF01 | Identificar origem B": {
+      "main": [
+        [
+          {
+            "node": "WF01 | Unir arquivos",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "WF01 | Unir arquivos": {
+      "main": [
+        [
+          {
+            "node": "WF01 | Validar normalizar e agrupar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF01 | Validar normalizar e agrupar": {
+      "main": [
+        [
+          {
+            "node": "WF01 | Lote de leads?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF01 | Lote de leads?": {
+      "main": [
+        [
+          {
+            "node": "WF01 | Inserir leads sem sobrescrever",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "WF01 | Lote de revisão?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WF01 | Lote de revisão?": {
+      "main": [
+        [
+          {
+            "node": "WF01 | Inserir revisões",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "America/Sao_Paulo",
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}
