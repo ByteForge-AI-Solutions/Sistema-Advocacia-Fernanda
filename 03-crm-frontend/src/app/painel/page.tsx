@@ -14,7 +14,9 @@ export default function PainelPage() {
     <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-10">
       <h1 className="text-2xl font-semibold tracking-tight text-navy-950">Olá, {primeiroNome}</h1>
       <p className="mt-1 text-sm text-slate-500">
-        {perfil.cargo === "advogado"
+        {perfil.cargo === "socio"
+          ? "Fichas de todo o escritório, ordenadas por prioridade e chegada. Filtre por advogado para auditar uma carteira."
+          : perfil.cargo === "advogado"
           ? "Sua fila de atendimentos e as fichas da sua equipe, ordenadas por prioridade e chegada."
           : perfil.cargo === "desenvolvedor"
             ? "Conta de teste: aqui aparecem só as fichas atribuídas ao seu usuário."

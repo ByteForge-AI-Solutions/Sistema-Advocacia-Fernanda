@@ -1,15 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Clock, FilePen, Gavel, Paperclip, Phone, CircleAlert } from "lucide-react";
+import { ChevronDown, ChevronUp, Clock, FilePen, Gavel, Paperclip, Phone, CircleAlert, LoaderCircle, UserRoundCheck } from "lucide-react";
 import { GerarDocumentosModal } from "@/components/documentos/gerar-documentos-modal";
-import type { Ficha } from "@/lib/fichas";
+import { assumirFicha, type Ficha } from "@/lib/fichas";
 import {
   AreaBadge,
   PRIORIDADE_ESTILO,
   PrioridadeBadge,
+  SemResponsavelBadge,
   StatusBadge,
-  SupervisaoBadge,
+  VinculoBadge,
 } from "@/components/fichas/badges";
 
 const LIMITE_RESUMO = 240;
@@ -42,9 +43,31 @@ function plural(n: number, singular: string, pluralForm: string) {
   return `${n} ${n === 1 ? singular : pluralForm}`;
 }
 
-export function FichaCard({ ficha }: { ficha: Ficha }) {
+/**
+ * @param podeAssumir titular/sócio: mostra "Assumir" em fichas sem responsável.
+ * @param onAlterada chamada depois de assumir, para recarregar a fila.
+ */
+export function FichaCard({ ficha, podeAssumir = false, onAlterada }: { ficha: Ficha; podeAssumir?: boolean; onAlterada?: () => void }) {
   const [expandido, setExpandido] = useState(false);
   const [documentosAberto, setDocumentosAberto] = useState(false);
+  const [assumindo, setAssumindo] = useState(false);
+  const [erroAssumir, setErroAssumir] = useState<string | null>(null);
+  const semResponsavel = ficha.advogado_id === null;
+
+  function assumir() {
+    setAssumindo(true);
+    setErroAssumir(null);
+    assumirFicha(ficha.id).then(
+      () => {
+        setAssumindo(false);
+        onAlterada?.();
+      },
+      (e: unknown) => {
+        setAssumindo(false);
+        setErroAssumir(e instanceof Error ? e.message : "Não foi possível assumir a ficha.");
+      },
+    );
+  }
   const resumoLongo = ficha.resumo_fatos.length > LIMITE_RESUMO;
   const faixa = ficha.prioridade ? PRIORIDADE_ESTILO[ficha.prioridade].faixa : "bg-slate-300";
   const finalizada = ficha.status === "finalizado";
@@ -63,7 +86,7 @@ export function FichaCard({ ficha }: { ficha: Ficha }) {
             <h3 className="truncate text-base font-semibold text-slate-900">{ficha.nome_cliente}</h3>
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <AreaBadge area={ficha.area_identificada} />
-              {ficha.estagiario && <SupervisaoBadge nome={ficha.estagiario.nome} />}
+              {semResponsavel ? <SemResponsavelBadge /> : <VinculoBadge estagiario={ficha.estagiario} responsavel={ficha.responsavel} />}
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-1.5 sm:justify-end">
@@ -71,6 +94,22 @@ export function FichaCard({ ficha }: { ficha: Ficha }) {
             <StatusBadge status={ficha.status} original={ficha.status_original} />
           </div>
         </header>
+
+        {semResponsavel && podeAssumir && (
+          <div className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+            <p className="flex-1 text-sm text-amber-900">Esta ficha ainda não tem advogado responsável.</p>
+            <button
+              type="button"
+              onClick={assumir}
+              disabled={assumindo}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-navy-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-navy-800 disabled:opacity-60"
+            >
+              {assumindo ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden /> : <UserRoundCheck className="size-3.5" aria-hidden />}
+              Assumir ficha
+            </button>
+            {erroAssumir && <p role="alert" className="w-full text-xs text-red-700">{erroAssumir}</p>}
+          </div>
+        )}
 
         {ficha.motivo_prioridade && (
           <p className="mt-4 flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">

@@ -21,7 +21,7 @@ Advogados titulares e estagiários do escritório.
 | `id` | UUID PK | `gen_random_uuid()` |
 | `nome` | TEXT NOT NULL | |
 | `email` | TEXT UNIQUE | Usado para vincular ao login (Supabase Auth). O `schema.sql` não preenche, mas os e-mails já foram cadastrados direto no Supabase. |
-| `cargo` | TEXT | `'advogado'` (padrão), `'estagiario'` ou `'desenvolvedor'` (conta de teste, seção 8) |
+| `cargo` | TEXT | `'advogado'` (padrão), `'socio'` (migração v4), `'estagiario'` ou `'desenvolvedor'` (conta de teste, seção 8). A v4 cria o CHECK `advogados_cargo_valido` com os 4 valores |
 | `supervisor_id` | UUID FK → `advogados.id` | Preenchido **apenas** para estagiários |
 | `areas_atuacao` | TEXT[] NOT NULL | Valores da lista de áreas abaixo |
 | `ativo` | BOOLEAN | Padrão `true`; inativos não recebem casos |
@@ -49,7 +49,12 @@ Ficha estruturada gerada pela IA ao fim da triagem.
 
 No CRM, a fila de cada advogado é ordenada por `prioridade` (alta → média → baixa) e depois por `created_at`, da mais antiga para a mais nova. Como `prioridade` é TEXT, ordene com um mapeamento explícito, não alfabeticamente. Essa lógica está em `ordenarFila` (`03-crm-frontend/src/lib/fichas.ts`), que também normaliza variações como `'Média'`/`'MEDIA'`.
 
-**RLS** (seção 5 do `schema.sql`): a função `pode_acessar_ficha(responsavel_id)` decide o acesso. O titular vê e edita as fichas dele e as dos estagiários que supervisiona, e pode delegar só para esses estagiários. O estagiário vê e edita só as dele e não consegue repassá-las. INSERT e DELETE são exclusivos da `service_role` (bot n8n).
+**RLS:** a função `pode_acessar_ficha(responsavel_id)` decide o acesso. A versão em vigor é a da migração `20261118_v4_cargo_socio.sql`; a seção 5 do `schema.sql` tem a versão antiga.
+- **Sócio:** vê e edita as fichas de todo o escritório, exceto as de contas `desenvolvedor`, e pode delegar para qualquer titular ou estagiário.
+- **Titular:** vê e edita as fichas dele e as dos estagiários que supervisiona, e pode delegar só para esses estagiários.
+- **Estagiário:** vê e edita só as dele e não consegue repassá-las.
+- **Fichas sem responsável** (`advogado_id` NULL): o titular vê as da área dele e o sócio vê todas, pela política `crm fichas sem responsavel`. Quem assume chama a RPC `crm_ficha_assumir`, que também atualiza `ultima_atribuicao`.
+- INSERT e DELETE são exclusivos da `service_role` (bot n8n).
 
 ### `conversas_memoria`
 Memória da conversa do agente no WhatsApp, uma linha por cliente.
@@ -103,23 +108,34 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
 - `04-banco-dados/migrations/` é **incremental**. Nunca reexecute o `schema.sql` inteiro em banco existente. Ordem de aplicação:
   1. `00_diagnostico_preinstalacao.sql` (só leitura);
   2. `20261118_bot_unificado.sql` (bot v2.1: tabelas `dfu_*`, trigger `dfu_prevenir_sobreposicao_agenda`);
-  3. `20261118_v3_crm_modulos.sql`.
-- **Hashes:** `01-agentes-ia/tests/check_integration.py` confere o SHA-256 de 8 arquivos: `advogados.ts`, `agenda.ts`, `disponibilidade.ts`, `fichas.ts`, `auth-provider.tsx`, `reuniao-modal.tsx`, `app/painel/page.tsx` e `schema.sql`. **Não edite esses arquivos.** Crie funcionalidade em arquivos novos. Se a mudança for inevitável, atualize o hash no teste e avise a equipe do bot.
+  3. `20261118_v3_crm_modulos.sql`;
+  4. `20261118_v4_cargo_socio.sql`: cargo `socio`, nova `pode_acessar_ficha` e sócios no rodízio do bot. Ela redefine `dfu_ofertar`, `dfu_criar_ficha` e `dfu_confirmar`, cópias literais em que só muda o filtro de cargo. **Se a migração do bot for reaplicada, reaplique a v4 depois.**
+- **Hashes:** `01-agentes-ia/tests/check_integration.py` confere o SHA-256 de 8 arquivos: `advogados.ts`, `agenda.ts`, `disponibilidade.ts`, `fichas.ts`, `auth-provider.tsx`, `reuniao-modal.tsx`, `app/painel/page.tsx` e `schema.sql`.
+  - **Não edite esses arquivos.** Crie funcionalidade em arquivos novos. Se a mudança for inevitável, atualize o hash no teste e avise a equipe do bot.
+  - O hash ignora a diferença CRLF/LF.
+  - Na v4 (18/11/2026), `advogados.ts`, `agenda.ts`, `fichas.ts`, `reuniao-modal.tsx` e `app/painel/page.tsx` foram alterados de propósito para o cargo `socio`, e os hashes foram renovados.
+  - Para rodar o teste no Windows: `py 01-agentes-ia/tests/check_integration.py`.
+  - A última asserção falha enquanto existir `03-crm-frontend/.env.local`. Ela confere o pacote de entrega; na máquina de desenvolvimento, rode o teste numa cópia feita com `git ls-files -co --exclude-standard`.
 - **Escrita nas `dfu_*`:** o CRM nunca escreve direto nelas. Usa as RPCs `crm_atendimento_*` (assumir, responder, transferir, devolver_bot, encerrar, etiquetas). Também chama a original `dfu_assumir_atendimento` no caso padrão.
 - **Respostas humanas:** entram em `dfu_outbox` (tipo `'resposta'`, `autor_advogado_id` preenchido). O n8n as envia pelo nó "10 | Fila de saída (cada minuto)", com os mesmos portões de compliance. A RPC exige `status = 'humano'` e a janela de 24 h aberta.
-- **Atendimento sem responsável** (`advogado_id` NULL): visível só a titulares (`cargo = 'advogado'`) da área, via `crm_titular_da_area`. Assumir atribui ao titular.
+- **Atendimento sem responsável** (`advogado_id` NULL): visível só a titulares da área (`cargo = 'advogado'`) e a todos os sócios, via `crm_titular_da_area`. Assumir atribui a quem assumiu.
+- **Transferência:** o destino pode ser um titular ativo (advogado ou sócio) ou um estagiário que a pessoa supervisiona; o sócio pode transferir para qualquer estagiário.
 - **Notas internas:** ficam em `dfu_notas_internas`, sem UPDATE/DELETE. `sistema = true` marca o registro automático das ações.
-- **Prazos:** `processos_prazos` (RLS via `pode_acessar_ficha`). Estagiário não exclui. A data fatal é `date`: use `dataLocal()` para não deslocar o fuso.
+- **Prazos:** `processos_prazos` (RLS via `pode_acessar_ficha`). Estagiário não exclui; titular, sócio e desenvolvedor excluem. A data fatal é `date`: use `dataLocal()` para não deslocar o fuso.
 - **Google Calendar (preparação):**
   - colunas `google_*` e `link_reuniao` em `agenda_advogados`;
   - fila `agenda_google_fila`, alimentada pelo trigger `crm_agenda_google_sync` apenas para advogados com `agenda_google_contas.ativo`;
   - RPCs do worker: `crm_google_retirar_fila`, `crm_google_concluir` e `crm_google_aplicar_alteracao`, esta com `crm.origem_sync = 'google'` para não gerar eco;
   - Edge Function `02-backend-integracao/supabase/functions/google-calendar-webhook`.
-- **Indicadores:** RPC `crm_indicadores` (só contagens). Titular vê o escritório; os demais veem o próprio escopo. Contas `desenvolvedor` ficam fora.
+- **Indicadores:** RPC `crm_indicadores` (só contagens). Só o **sócio** tem o escopo `escritorio`. Advogado, estagiário e desenvolvedor veem o próprio escopo, que inclui os estagiários supervisionados. Contas `desenvolvedor` ficam fora da visão do escritório.
 
-## Hierarquia: titulares e estagiários
+## Hierarquia: sócios, titulares e estagiários
 
-- **Titular:** `cargo = 'advogado'` e `supervisor_id = NULL`.
+- **Sócio:** `cargo = 'socio'` e `supervisor_id = NULL`. São os donos do escritório (Fernanda e Kayo, promovidos depois da v4).
+  - Atua como titular: entra no rodízio do bot, tem agenda própria, recebe e assume atendimentos e pode supervisionar estagiários.
+  - Tem supervisão total: vê, edita e filtra fichas, atendimentos, agenda, prazos e indicadores de todo o escritório.
+  - O isolamento continua: registros atribuídos a contas `desenvolvedor` ficam fora. `pode_acessar_ficha` usa uma lista explícita (`advogado`, `socio`, `estagiario`) para o responsável.
+- **Titular:** `cargo = 'advogado'` e `supervisor_id = NULL`. "Titular" no código (`ehTitular`) significa advogado **ou** sócio.
 - **Estagiário:** `cargo = 'estagiario'` e `supervisor_id` aponta para o titular que supervisiona (autorrelacionamento em `advogados`).
 - **Desenvolvedor:** `cargo = 'desenvolvedor'` e `supervisor_id = NULL`. É uma conta de teste e manutenção. Tem o mesmo escopo do estagiário: vê e edita **só o que está atribuído ao próprio id** (fichas, agenda e disponibilidade de teste) e não supervisiona ninguém. Não tem acesso de leitura a dados reais de clientes (LGPD). A sidebar mostra o selo "Modo desenvolvedor".
 
@@ -127,17 +143,22 @@ Equipe atual (seed):
 
 | Nome | Cargo | Áreas | Supervisor |
 |---|---|---|---|
-| Fernanda Lemos Fernandes Rigo | advogado | trabalhista, empresarial | — |
-| Kayo Ronnaro Silva Dias | advogado | civil | — |
+| Fernanda Lemos Fernandes Rigo | advogado → **socio** (v4) | trabalhista, empresarial | — |
+| Kayo Ronnaro Silva Dias | advogado → **socio** (v4) | civil | — |
 | Guilherme Alves da Silva | advogado | cartorario_reurb | — |
 | Karolina Kedma Araujo | advogado | trabalhista, previdenciario | — |
 | Caio Pereira Melo | advogado | tributario | — |
 | Ana Júlia Rodrigues de Souza | estagiario | trabalhista | Fernanda |
 
 Regras confirmadas:
-- **Rodízio automático (bot):** só entram `cargo = 'advogado' AND ativo = true`. Estagiários e desenvolvedores **nunca** recebem fichas do bot. O filtro precisa ser `= 'advogado'`, e não `<> 'estagiario'`.
+- **Rodízio automático (bot):** só entram `cargo IN ('advogado', 'socio') AND ativo = true`, desde a v4. Estagiários e desenvolvedores **nunca** recebem fichas do bot. O filtro precisa ser uma lista explícita, e não `<> 'estagiario'`.
 - **Delegação:** o estagiário só recebe uma ficha quando o titular supervisor a delega manualmente no CRM.
-- **Validação de cargo:** é feita no código do CRM. O `schema.sql` não cria CHECK; a seção 8.1 só atualiza um CHECK de cargo se já existir um no banco. A função `validarPerfil` em `03-crm-frontend/src/lib/advogados.ts` exige que `cargo` esteja em `CARGOS` (`'advogado'`, `'estagiario'`, `'desenvolvedor'`), que titular e desenvolvedor não tenham supervisor e que o estagiário tenha. Ao criar um cargo novo, atualize também `pode_acessar_ficha` (seção 5.2); sem isso, o RLS esconde tudo do usuário sem dar erro. Reutilize essa função em qualquer tela que crie ou edite advogados.
+- **Validação de cargo:** é feita no código do CRM e, desde a v4, também no banco, pelo CHECK `advogados_cargo_valido`. A função `validarPerfil` em `03-crm-frontend/src/lib/advogados.ts` exige três coisas:
+  - que `cargo` esteja em `CARGOS` (`'advogado'`, `'socio'`, `'estagiario'`, `'desenvolvedor'`);
+  - que titular, sócio e desenvolvedor não tenham supervisor;
+  - que o estagiário tenha.
+
+  **Ordem de implantação de um cargo novo:** migração, depois deploy do CRM, depois o UPDATE dos usuários. O CRM antigo desloga quem tiver um cargo que ele não conhece. Ao criar um cargo novo, atualize também `pode_acessar_ficha` (seção 5.2); sem isso, o RLS esconde tudo do usuário sem dar erro. Reutilize essa função em qualquer tela que crie ou edite advogados.
 - **Login:** o `email` de todos (titulares e estagiária) já está preenchido. O usuário do Supabase Auth é ligado ao registro em `advogados` pelo e-mail, sem diferenciar maiúsculas de minúsculas. Usuário sem registro, inativo ou com cargo inválido é deslogado na hora.
 
 ## As 6 áreas jurídicas
@@ -174,7 +195,11 @@ Organização:
 - `src/components/fichas/`: `badges.tsx` (cores de prioridade e status e a etiqueta "Sob supervisão - Nome"), `ficha-card.tsx` e `fila-fichas.tsx` (filtros por status e resumo por prioridade).
 - `src/components/esqueci-senha-modal.tsx`: modal que chama `resetPasswordForEmail` com `redirectTo` apontando para `/redefinir-senha`.
 - `src/lib/agenda.ts`: interface `AgendaAdvogado` (espelho da tabela) e `EventoAgenda` (+ estagiário). `buscarAgenda(perfil)` aplica a regra titular/estagiário e ordena por `data_hora_inicio` crescente.
-- `buscarEstagiariosSupervisionados(perfil)` (em `advogados.ts`) devolve a equipe do titular. É usada pela fila e pela agenda para montar os IDs visíveis, espelhando `pode_acessar_ficha`.
+- Funções de equipe em `advogados.ts`:
+  - `buscarEquipeVisivel(perfil)` devolve as pessoas cujos registros o usuário vê, com ele primeiro: o sócio recebe o escritório todo, sem desenvolvedores; o titular recebe ele mais os estagiários; os demais, só a si mesmos. Fichas, agenda e prazos montam IDs, nomes e filtros por advogado com ela, espelhando `pode_acessar_ficha`.
+  - `buscarEstagiariosSupervisionados(perfil)` devolve só os estagiários do titular ou sócio.
+  - `ehTitular`, `ehSocio` e `rotuloMembro` são auxiliares.
+  - `Ficha`, `EventoAgenda` e `PrazoNaTela` têm `responsavel`, preenchido quando o responsável não é o usuário, e `estagiario`. Na tela, os dois viram `VinculoBadge`.
 - `src/components/painel/sidebar.tsx`: menu lateral (desktop) e abas no topo (mobile). Para adicionar uma página, inclua o item em `ITENS`.
 - `src/app/login`: tela de login. `src/app/redefinir-senha`: destino do link de recuperação (`updateUser({ password })`).
 - `src/app/painel/layout.tsx`: protege todas as rotas `/painel/*` (manda para `/login` sem sessão) e renderiza a Sidebar. As páginas internas podem assumir que `useAuth().perfil` existe.

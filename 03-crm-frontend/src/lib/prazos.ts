@@ -1,6 +1,6 @@
 import type { PostgrestError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase/client";
-import { buscarEstagiariosSupervisionados, type Advogado, type MembroEquipe } from "@/lib/advogados";
+import { buscarEquipeVisivel, type Advogado, type MembroEquipe } from "@/lib/advogados";
 import { chaveDia } from "@/lib/datas";
 
 /** Tabela processos_prazos (migração 20261118_v3_crm_modulos.sql). */
@@ -32,6 +32,8 @@ export interface PrazoProcessual {
 
 export interface PrazoNaTela extends PrazoProcessual {
   estagiario: MembroEquipe | null;
+  /** Responsável quando não é o usuário logado (estagiário ou, para sócios, outro titular). */
+  responsavel: MembroEquipe | null;
 }
 
 export type DadosPrazo = Omit<PrazoProcessual, "id" | "cumprido_em" | "ficha">;
@@ -49,9 +51,9 @@ export class ErroPrazos extends Error {
 const tabelaAusente = (e: PostgrestError) => e.code === "PGRST205" || e.code === "42P01";
 
 export async function buscarPrazos(perfil: Advogado): Promise<{ prazos: PrazoNaTela[]; responsaveis: MembroEquipe[] }> {
-  const estagiarios = await buscarEstagiariosSupervisionados(perfil);
-  const porId = new Map(estagiarios.map((e) => [e.id, e]));
-  const responsaveis = [{ id: perfil.id, nome: perfil.nome }, ...estagiarios];
+  // Sócio: todo o escritório; titular: ele + estagiários; demais: só ele (espelha o RLS).
+  const responsaveis = await buscarEquipeVisivel(perfil);
+  const porId = new Map(responsaveis.map((r) => [r.id, r]));
   const { data, error } = await supabase
     .from("processos_prazos")
     .select(COLUNAS)
@@ -69,7 +71,15 @@ export async function buscarPrazos(perfil: Advogado): Promise<{ prazos: PrazoNaT
   }
   return {
     responsaveis,
-    prazos: (data ?? []).map((p) => ({ ...p, ficha: p.ficha ?? null, estagiario: porId.get(p.advogado_id) ?? null })),
+    prazos: (data ?? []).map((p) => {
+      const membro = p.advogado_id === perfil.id ? null : (porId.get(p.advogado_id) ?? null);
+      return {
+        ...p,
+        ficha: p.ficha ?? null,
+        responsavel: membro,
+        estagiario: membro?.cargo === "estagiario" ? membro : null,
+      };
+    }),
   };
 }
 

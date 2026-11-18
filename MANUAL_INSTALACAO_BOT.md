@@ -72,7 +72,7 @@ LEFT JOIN public.disponibilidade_advogados d ON d.advogado_id = a.id
 ORDER BY a.nome, d.dia_semana;
 ```
 
-**Atenção:** `desenvolvedor` e `estagiario` não recebem leads automaticamente. Somente `cargo = 'advogado' AND ativo = true` pode ser candidato ao agendamento.
+**Atenção:** `desenvolvedor` e `estagiario` não recebem leads automaticamente. Somente `cargo IN ('advogado','socio') AND ativo = true` pode ser candidato ao agendamento (sócios entram a partir da migração `20261118_v4_cargo_socio.sql`; se esta migração do bot for reaplicada, reaplique a v4 em seguida).
 
 ## 4. Aplicar a migração SQL
 
@@ -234,7 +234,7 @@ A tela não substitui uma caixa de entrada de WhatsApp humano: permite visualiza
 2. Em primeiro contato, `dfu_receber` cria uma saudação fixa e registra o cliente. O envio fica na `dfu_outbox`.
 3. Ao continuar a conversa, o bot usa a OpenAI, com o histórico e dados já coletados, para adaptar as perguntas ao caso. O roteiro especializado de **trabalho sem registro** cobre situação do vínculo, período, função, jornada, intervalo, salário, forma de pagamento e acidente, sem exigir todos os itens antes de oferecer consulta.
 4. A IA devolve um **JSON de dados e ações**, nunca um horário por conta própria. O SQL valida a ação e constrói um resumo factual preliminar; o assistente não emite parecer ou promessa de êxito.
-5. `dfu_ofertar` compara **área jurídica**, advogados ativos com `cargo='advogado'`, dias e janelas cadastradas em `disponibilidade_advogados`, duração individual, quantidade diária, feriados e compromissos já existentes.
+5. `dfu_ofertar` compara **área jurídica**, advogados ativos com `cargo IN ('advogado','socio')` (após a v4), dias e janelas cadastradas em `disponibilidade_advogados`, duração individual, quantidade diária, feriados e compromissos já existentes.
 6. A preferência é pelo especialista com **mais slots livres nos próximos sete dias**; desempate por atribuição mais antiga. Até três horários reais, preferindo datas distintas, são oferecidos ao cliente. A oferta vale 30 minutos.
 7. Ao escolher expressamente 1, 2 ou 3, `dfu_confirmar` revalida a disponibilidade sob trava transacional, registra a reunião em `agenda_advogados` e cria/atualiza a ficha `fichas_clientes`. Só então o bot informa a confirmação.
 8. O advogado visualiza a **reunião em sua agenda**, a ficha com o **resumo fático** e o histórico na tela Conversas do bot. A modalidade (presencial, chamada ou Meet) deve ser combinada pelo escritório; esta versão não cria evento Google externo.

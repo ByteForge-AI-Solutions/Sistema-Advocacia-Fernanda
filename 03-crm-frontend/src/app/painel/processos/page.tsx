@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CircleAlert, CircleCheckBig, Gavel, LoaderCircle, Pencil, Plus, Search, Trash, Undo2, UserRound } from "lucide-react";
 import { useAuth } from "@/components/auth-provider";
-import { SupervisaoBadge } from "@/components/fichas/badges";
+import { VinculoBadge } from "@/components/fichas/badges";
 import { PrazoModal } from "@/components/processos/prazo-modal";
 import { Toast } from "@/components/toast";
-import type { MembroEquipe } from "@/lib/advogados";
+import { rotuloMembro, type MembroEquipe } from "@/lib/advogados";
 import {
   URGENCIA_INFO,
   alterarStatusPrazo,
@@ -41,6 +41,8 @@ export default function ProcessosPage() {
   const [versao, setVersao] = useState(0);
   const [visao, setVisao] = useState<Visao>("abertos");
   const [busca, setBusca] = useState("");
+  /** "todos" ou o id de um membro da equipe visível (sócio: todo o escritório). */
+  const [filtroResponsavel, setFiltroResponsavel] = useState("todos");
   const [modal, setModal] = useState<{ prazo?: PrazoNaTela } | null>(null);
   const [sucesso, setSucesso] = useState<string | null>(null);
   const [erroAcao, setErroAcao] = useState<string | null>(null);
@@ -73,15 +75,20 @@ export default function ProcessosPage() {
     setVersao((v) => v + 1);
   };
 
+  const doResponsavel = useMemo(
+    () => (filtroResponsavel === "todos" ? prazos : prazos.filter((p) => p.advogado_id === filtroResponsavel)),
+    [prazos, filtroResponsavel],
+  );
+
   const contagem = useMemo(() => {
     const c: Record<Urgencia, number> = { vencido: 0, hoje: 0, urgente: 0, proximo: 0, futuro: 0, cumprido: 0 };
-    for (const p of prazos) c[urgenciaDoPrazo(p)]++;
+    for (const p of doResponsavel) c[urgenciaDoPrazo(p)]++;
     return c;
-  }, [prazos]);
+  }, [doResponsavel]);
 
   const grupos = useMemo(() => {
     const termo = busca.trim().toLowerCase();
-    const filtrados = prazos.filter((p) => {
+    const filtrados = doResponsavel.filter((p) => {
       const u = urgenciaDoPrazo(p);
       if (visao === "abertos" && u === "cumprido") return false;
       if (visao === "cumpridos" && u !== "cumprido") return false;
@@ -93,7 +100,7 @@ export default function ProcessosPage() {
     return ORDEM.map((u) => ({ urgencia: u, itens: filtrados.filter((p) => urgenciaDoPrazo(p) === u) })).filter(
       (g) => g.itens.length > 0,
     );
-  }, [prazos, visao, busca]);
+  }, [doResponsavel, visao, busca]);
 
   async function acao(fn: () => Promise<void>, ok: string) {
     setErroAcao(null);
@@ -164,6 +171,22 @@ export default function ProcessosPage() {
             </button>
           ))}
         </div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        {responsaveis.length > 1 && (
+          <select
+            value={filtroResponsavel}
+            onChange={(e) => setFiltroResponsavel(e.target.value)}
+            aria-label="Filtrar por advogado"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-navy-500"
+          >
+            <option value="todos">{perfil.cargo === "socio" ? "Todo o escritório" : "Toda a equipe"}</option>
+            {responsaveis.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.id === perfil.id ? "Meus prazos" : rotuloMembro(r, perfil.id)}
+              </option>
+            ))}
+          </select>
+        )}
         <div className="relative sm:w-72">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden />
           <input
@@ -174,6 +197,7 @@ export default function ProcessosPage() {
             aria-label="Buscar prazos"
             className="block w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm outline-none focus:border-navy-500 focus:ring-3 focus:ring-navy-500/15"
           />
+        </div>
         </div>
       </div>
 
@@ -230,7 +254,7 @@ export default function ProcessosPage() {
                               {p.tribunal_vara && <span>{p.tribunal_vara}</span>}
                               {p.fase_processual && <span>Fase: {p.fase_processual}</span>}
                               <span>{p.tipo_contagem === "uteis" ? "Dias úteis" : "Dias corridos"}</span>
-                              {p.estagiario && <SupervisaoBadge nome={p.estagiario.nome} />}
+                              <VinculoBadge estagiario={p.estagiario} responsavel={p.responsavel} />
                             </div>
                           </div>
                           <div className="shrink-0 text-left sm:text-right">

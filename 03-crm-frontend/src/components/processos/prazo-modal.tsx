@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Calculator, CircleAlert, Gavel, LoaderCircle, X } from "lucide-react";
-import type { Advogado, MembroEquipe } from "@/lib/advogados";
+import { rotuloMembro, type Advogado, type MembroEquipe } from "@/lib/advogados";
 import { buscarFichas, type Ficha } from "@/lib/fichas";
 import {
   STATUS_PRAZO_LABEL,
@@ -182,7 +182,7 @@ export function PrazoModal({
               <label htmlFor="resp" className={rotulo}>Responsável</label>
               <select id="resp" value={form.advogado_id} disabled={responsaveis.length <= 1} onChange={(e) => definir("advogado_id", e.target.value)} className={campo}>
                 {responsaveis.map((r) => (
-                  <option key={r.id} value={r.id}>{r.id === perfil.id ? `${r.nome} (você)` : `${r.nome} · estagiário(a)`}</option>
+                  <option key={r.id} value={r.id}>{rotuloMembro(r, perfil.id)}</option>
                 ))}
               </select>
             </div>

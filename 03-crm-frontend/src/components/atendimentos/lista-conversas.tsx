@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { Search, UsersRound } from "lucide-react";
 import { AREAS_JURIDICAS, isAreaJuridica } from "@/lib/advogados";
 import {
   conversaComBot,
@@ -51,27 +51,38 @@ const PONTO_PRIORIDADE: Record<string, string> = { alta: "bg-red-500", media: "b
 export function ListaConversas({
   itens,
   meuId,
+  responsaveis = [],
+  rotuloTodos = "Toda a equipe",
   selecionado,
   onSelecionar,
 }: {
   itens: Atendimento[];
   meuId: string;
+  /** Pessoas pelas quais dá para filtrar (sócio: escritório; titular: ele + estagiários). Vazio = sem filtro. */
+  responsaveis?: { id: string; nome: string; rotulo: string }[];
+  rotuloTodos?: string;
   selecionado: string | null;
   onSelecionar: (telefone: string) => void;
 }) {
   const [filtro, setFiltro] = useState<FiltroConversa>("todas");
   const [busca, setBusca] = useState("");
+  const [responsavel, setResponsavel] = useState("todos");
+
+  const doResponsavel = useMemo(
+    () => (responsavel === "todos" ? itens : itens.filter((a) => a.advogado_id === responsavel)),
+    [itens, responsavel],
+  );
 
   const contagem = useMemo(() => {
     const c = {} as Record<FiltroConversa, number>;
-    for (const f of FILTROS) c[f.valor] = itens.filter((a) => passaFiltro(a, f.valor, meuId)).length;
+    for (const f of FILTROS) c[f.valor] = doResponsavel.filter((a) => passaFiltro(a, f.valor, meuId)).length;
     return c;
-  }, [itens, meuId]);
+  }, [doResponsavel, meuId]);
 
   const visiveis = useMemo(() => {
     const termo = busca.trim().toLowerCase();
     const digitos = termo.replace(/\D/g, "");
-    return itens.filter((a) => {
+    return doResponsavel.filter((a) => {
       if (!passaFiltro(a, filtro, meuId)) return false;
       if (!termo) return true;
       return (
@@ -80,7 +91,7 @@ export function ListaConversas({
         (a.etiquetas ?? []).some((t) => t.includes(termo))
       );
     });
-  }, [itens, filtro, busca, meuId]);
+  }, [doResponsavel, filtro, busca, meuId]);
 
   return (
     <section aria-label="Conversas" className="flex min-h-0 flex-col border-slate-200 bg-white lg:border-r">
@@ -96,6 +107,24 @@ export function ListaConversas({
             className="block w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm outline-none transition focus:border-navy-500 focus:ring-3 focus:ring-navy-500/15"
           />
         </div>
+        {responsaveis.length > 1 && (
+          <div className="flex items-center gap-2">
+            <UsersRound className="size-4 shrink-0 text-slate-400" aria-hidden />
+            <select
+              value={responsavel}
+              onChange={(e) => setResponsavel(e.target.value)}
+              aria-label="Filtrar por responsável"
+              className="block w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-700 outline-none focus:border-navy-500"
+            >
+              <option value="todos">{rotuloTodos}</option>
+              {responsaveis.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.rotulo}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div role="group" aria-label="Filtrar conversas" className="flex flex-wrap gap-1">
           {FILTROS.map(({ valor, label }) => {
             const ativo = filtro === valor;

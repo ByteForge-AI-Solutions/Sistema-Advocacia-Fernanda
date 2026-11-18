@@ -121,6 +121,23 @@ export default function ConversasBotPage() {
   }, [selecionado, recarregarConversa]);
 
   const nomes = useMemo(() => new Map(equipe.map((m) => [m.id, m.nome])), [equipe]);
+  const souSocio = perfil?.cargo === "socio";
+  // Filtro por responsável, espelhando o RLS: sócio = escritório (sem contas de teste);
+  // titular = ele + estagiários que supervisiona; demais cargos não têm filtro.
+  const responsaveisFiltro = useMemo(() => {
+    if (!perfil || (perfil.cargo !== "socio" && perfil.cargo !== "advogado")) return [];
+    const visiveis = equipe.filter((m) =>
+      souSocio
+        ? ["socio", "advogado", "estagiario"].includes(m.cargo)
+        : m.cargo === "estagiario" && m.supervisor_id === perfil.id,
+    );
+    const rotulo = (m: MembroDestino) =>
+      m.cargo === "estagiario" ? `${m.nome} · estagiário(a)` : m.cargo === "socio" ? `${m.nome} · sócio(a)` : m.nome;
+    return [
+      { id: perfil.id, nome: perfil.nome, rotulo: "Meus atendimentos" },
+      ...visiveis.filter((m) => m.id !== perfil.id).map((m) => ({ id: m.id, nome: m.nome, rotulo: rotulo(m) })),
+    ];
+  }, [equipe, perfil, souSocio]);
   const atual = itens.find((a) => a.telefone === selecionado) ?? null;
 
   function selecionar(telefone: string) {
@@ -223,7 +240,14 @@ export default function ConversasBotPage() {
       ) : (
         <div className="grid min-h-0 flex-1 lg:grid-cols-[320px_1fr] xl:grid-cols-[320px_1fr_320px]">
           <div className={`min-h-0 ${selecionado ? "hidden lg:flex" : "flex"} flex-col`}>
-            <ListaConversas itens={itens} meuId={perfil.id} selecionado={selecionado} onSelecionar={selecionar} />
+            <ListaConversas
+              itens={itens}
+              meuId={perfil.id}
+              responsaveis={responsaveisFiltro}
+              rotuloTodos={souSocio ? "Todo o escritório" : "Toda a equipe"}
+              selecionado={selecionado}
+              onSelecionar={selecionar}
+            />
           </div>
 
           {atual ? (
@@ -271,6 +295,7 @@ export default function ConversasBotPage() {
           equipe={equipe}
           meuId={perfil.id}
           atualId={atual.advogado_id}
+          souSocio={souSocio}
           onConfirmar={(destino) => executar(() => transferir(atual.telefone, destino), "Atendimento transferido.")}
           onFechar={() => setTransferindo(false)}
         />

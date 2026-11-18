@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabase/client";
-import { buscarEstagiariosSupervisionados, type Advogado } from "@/lib/advogados";
+import { buscarEquipeVisivel, ehSocio, ehTitular, type Advogado, type MembroEquipe } from "@/lib/advogados";
 
 export const PRIORIDADES = ["alta", "media", "baixa"] as const;
 export type Prioridade = (typeof PRIORIDADES)[number];
@@ -31,13 +31,16 @@ export interface Ficha {
   resumo_fatos: string;
   qtd_documentos: number;
   qtd_processos: number;
-  advogado_id: string;
+  /** null = sem responsável (visível a titulares da área e a sócios, que podem assumir). */
+  advogado_id: string | null;
   /** Normalizado; null quando o valor do banco não é um dos 4 status conhecidos. */
   status: StatusAtendimento | null;
   status_original: string;
   created_at: string;
-  /** Preenchido quando a ficha está com um estagiário supervisionado pelo usuário logado. */
+  /** Preenchido quando a ficha está com um estagiário (supervisionado pelo usuário ou, para sócios, de qualquer titular). */
   estagiario: { id: string; nome: string } | null;
+  /** Responsável quando não é o usuário logado (estagiário ou, para sócios, outro titular). */
+  responsavel: MembroEquipe | null;
 }
 
 interface FichaRow {
@@ -50,7 +53,7 @@ interface FichaRow {
   resumo_fatos: string;
   documentos_urls: string[] | null;
   processos_encontrados: unknown;
-  advogado_id: string;
+  advogado_id: string | null;
   status_atendimento: string | null;
   created_at: string;
 }
@@ -89,23 +92,28 @@ export function ordenarFila(fichas: Ficha[]): Ficha[] {
 
 /**
  * Busca a fila visível para o usuário logado:
- * - titular: fichas dele + fichas dos estagiários que ele supervisiona;
- * - estagiário: só as fichas atribuídas a ele.
+ * - sócio: todas as fichas do escritório (o RLS exclui as de contas 'desenvolvedor');
+ * - titular: fichas dele + dos estagiários que supervisiona + sem responsável da área dele;
+ * - estagiário/desenvolvedor: só as fichas atribuídas a ele.
  * O RLS no banco aplica a mesma regra; este filtro só evita depender dele para montar a tela.
  */
 export async function buscarFichas(perfil: Advogado): Promise<Ficha[]> {
-  const estagiarios = await buscarEstagiariosSupervisionados(perfil);
-  const idsResponsaveis = [perfil.id, ...estagiarios.map((e) => e.id)];
-  const estagiarioPorId = new Map(estagiarios.map((e) => [e.id, e]));
+  const equipe = await buscarEquipeVisivel(perfil);
+  const membroPorId = new Map(equipe.map((m) => [m.id, m]));
+  const idsResponsaveis = equipe.map((m) => m.id);
 
   // CPF fica fora da listagem (minimização de dados, LGPD).
-  const { data, error } = await supabase
+  let consulta = supabase
     .from("fichas_clientes")
     .select(
       "id, nome_cliente, telefone, area_identificada, prioridade, motivo_prioridade, resumo_fatos, documentos_urls, processos_encontrados, advogado_id, status_atendimento, created_at",
-    )
-    .in("advogado_id", idsResponsaveis)
-    .overrideTypes<FichaRow[], { merge: false }>();
+    );
+  if (!ehSocio(perfil)) {
+    consulta = ehTitular(perfil.cargo)
+      ? consulta.or(`advogado_id.in.(${idsResponsaveis.join(",")}),advogado_id.is.null`)
+      : consulta.in("advogado_id", idsResponsaveis);
+  }
+  const { data, error } = await consulta.overrideTypes<FichaRow[], { merge: false }>();
 
   if (error) throw new Error(error.message);
 
@@ -123,8 +131,34 @@ export async function buscarFichas(perfil: Advogado): Promise<Ficha[]> {
     status: paraStatus(row.status_atendimento),
     status_original: row.status_atendimento ?? "novo",
     created_at: row.created_at,
-    estagiario: estagiarioPorId.get(row.advogado_id) ?? null,
+    ...vinculo(row.advogado_id, perfil.id, membroPorId),
   }));
 
   return ordenarFila(fichas);
+}
+
+/** Responsável (quando não é o usuário) e, se for estagiário, a etiqueta de supervisão. */
+function vinculo(
+  advogadoId: string | null,
+  meuId: string,
+  membroPorId: Map<string, MembroEquipe>,
+): Pick<Ficha, "estagiario" | "responsavel"> {
+  if (!advogadoId || advogadoId === meuId) return { estagiario: null, responsavel: null };
+  const membro = membroPorId.get(advogadoId) ?? { id: advogadoId, nome: "Outro responsável" };
+  return {
+    responsavel: membro,
+    estagiario: membro.cargo === "estagiario" ? { id: membro.id, nome: membro.nome } : null,
+  };
+}
+
+/** Titular/sócio assume uma ficha sem responsável (RPC crm_ficha_assumir, migração v4). */
+export async function assumirFicha(fichaId: string): Promise<void> {
+  const { error } = await supabase.rpc("crm_ficha_assumir", { p_ficha: fichaId });
+  if (!error) return;
+  console.error("Erro ao assumir ficha:", error.code, error.message);
+  if (error.code === "PGRST202" || error.code === "42883") {
+    throw new Error("Assumir fichas exige a migração 20261118_v4_cargo_socio.sql no Supabase.");
+  }
+  if (error.hint === "crm_estado_invalido") throw new Error("Esta ficha já tem responsável. Atualize a fila.");
+  throw new Error("Não foi possível assumir a ficha. Confira se ela é da sua área.");
 }

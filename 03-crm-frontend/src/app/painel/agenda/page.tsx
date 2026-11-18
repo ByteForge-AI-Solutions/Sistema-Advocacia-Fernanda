@@ -19,9 +19,9 @@ import { CalendarioMensal, limitesDoMes, primeiroDiaDoMes } from "@/components/a
 import { ReuniaoModal } from "@/components/agenda/reuniao-modal";
 import { buscarFeriados, buscarPrazosPeriodo, type PrazoProcessual } from "@/lib/prazos";
 import { useAuth } from "@/components/auth-provider";
-import { AreaBadge, PRIORIDADE_ESTILO, PrioridadeBadge, SupervisaoBadge } from "@/components/fichas/badges";
+import { AreaBadge, PRIORIDADE_ESTILO, PrioridadeBadge, VinculoBadge } from "@/components/fichas/badges";
 import { Toast } from "@/components/toast";
-import type { MembroEquipe } from "@/lib/advogados";
+import { rotuloMembro, type MembroEquipe } from "@/lib/advogados";
 import {
   ErroAgenda,
   buscarAgenda,
@@ -135,9 +135,9 @@ function EventoCard({
         </p>
       )}
 
-      {evento.estagiario && (
+      {evento.responsavel && (
         <div className="mt-2">
-          <SupervisaoBadge nome={evento.estagiario.nome} />
+          <VinculoBadge estagiario={evento.estagiario} responsavel={evento.responsavel} />
         </div>
       )}
 
@@ -315,10 +315,10 @@ export default function AgendaPage() {
               aria-label="Filtrar por advogado"
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-navy-500"
             >
-              <option value="todos">Toda a equipe</option>
+              <option value="todos">{perfil?.cargo === "socio" ? "Todo o escritório" : "Toda a equipe"}</option>
               {responsaveis.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.id === perfil?.id ? "Minha agenda" : r.nome}
+                  {r.id === perfil?.id ? "Minha agenda" : perfil ? rotuloMembro(r, perfil.id) : r.nome}
                 </option>
               ))}
             </select>

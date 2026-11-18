@@ -81,7 +81,7 @@ onAbrirPrazo: (p: PrazoProcessual) => void;
       <span className="font-semibold tabular-nums text-navy-800">{fmtHora.format(new Date(e.data_hora_inicio))}</span>{" "}
       <span>{e.ficha?.nome_cliente ?? e.titulo_evento}</span>
       {!compacto && <span className="text-slate-500"> · {rotuloArea(e.area_juridica)}</span>}
-      {!compacto && e.estagiario && <span className="text-slate-500"> · {e.estagiario.nome.split(" ")[0]}</span>}
+      {!compacto && e.responsavel && <span className="text-slate-500"> · {e.responsavel.nome.split(" ")[0]}</span>}
     </button>
   );
 }

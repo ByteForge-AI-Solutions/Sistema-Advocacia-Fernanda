@@ -1,4 +1,4 @@
-import { GraduationCap } from "lucide-react";
+import { GraduationCap, UserRound, UserRoundX } from "lucide-react";
 import { AREAS_JURIDICAS, isAreaJuridica } from "@/lib/advogados";
 import {
   PRIORIDADE_LABEL,
@@ -64,4 +64,30 @@ export function SupervisaoBadge({ nome }: { nome: string }) {
       Sob supervisão - {nome}
     </span>
   );
+}
+
+/** Responsável quando é outro titular (visão do sócio). */
+export function ResponsavelBadge({ nome }: { nome: string }) {
+  return (
+    <span className={`${base} bg-slate-100 text-slate-700 ring-slate-300`}>
+      <UserRound className="size-3.5" aria-hidden />
+      Responsável: {nome}
+    </span>
+  );
+}
+
+export function SemResponsavelBadge() {
+  return (
+    <span className={`${base} bg-amber-50 text-amber-900 ring-amber-300`}>
+      <UserRoundX className="size-3.5" aria-hidden />
+      Sem responsável
+    </span>
+  );
+}
+
+/** Etiqueta de vínculo do registro: estagiário → supervisão; outro titular → responsável. */
+export function VinculoBadge({ estagiario, responsavel }: { estagiario: { nome: string } | null; responsavel: { nome: string } | null }) {
+  if (estagiario) return <SupervisaoBadge nome={estagiario.nome} />;
+  if (responsavel) return <ResponsavelBadge nome={responsavel.nome} />;
+  return null;
 }

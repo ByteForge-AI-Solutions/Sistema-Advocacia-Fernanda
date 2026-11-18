@@ -80,14 +80,14 @@ assert 'NUNCA execute schema.sql inteiro' in s
 assert "IF TG_OP = 'UPDATE' THEN" in s and "OLD.status IN ('agendado','confirmado')" in s
 assert 'NEW.data_hora_fim IS NOT DISTINCT FROM OLD.data_hora_fim' in s
 assert 'CREATE TABLE IF NOT EXISTS public.dfu_atendimentos' in s
-preflight=(ROOT/'04-banco-dados/migrations/00_diagnostico_preinstalacao.sql').read_text()
+preflight=(ROOT/'04-banco-dados/migrations/00_diagnostico_preinstalacao.sql').read_text(encoding='utf-8')
 assert all(t not in preflight.upper() for t in ('UPDATE ', 'DELETE FROM', 'DROP TABLE', 'ALTER TABLE', 'INSERT INTO'))
 assert 'ativos_sem_fim' in preflight and 'reuniao_a' in preflight and 'qtd_linhas' in preflight
-patch=(ROOT/'04-banco-dados/migrations/20261118_v2_1_correcao_agenda_se_v2_ja_instalado.sql').read_text()
+patch=(ROOT/'04-banco-dados/migrations/20261118_v2_1_correcao_agenda_se_v2_ja_instalado.sql').read_text(encoding='utf-8')
 assert 'CREATE OR REPLACE FUNCTION public.dfu_proteger_agenda()' in patch
 assert 'DROP TRIGGER' not in patch and 'CREATE TABLE' not in patch
 
-edge=EDGE.read_text()
+edge=EDGE.read_text(encoding='utf-8')
 assert 'X-DFU-Internal-Secret' in edge
 assert 'X-Hub-Signature-256'.lower() in edge.lower()
 assert 'crypto.subtle.sign("HMAC"' in edge
@@ -96,25 +96,39 @@ assert edge.index('const state = await persist(parsed)') < edge.index('await wak
 assert edge.index('const state = await persist(parsed)') < edge.index('return new Response("EVENT_RECEIVED"')
 
 # Hash SHA256 dos arquivos sensíveis: tomados da última versão enviada do CRM.
+# v4 (cargo 'socio', 2026-11-18): advogados.ts, agenda.ts, fichas.ts, reuniao-modal.tsx e
+# app/painel/page.tsx foram atualizados de propósito; hashes renovados abaixo.
+# O hash é calculado com fim de linha normalizado (CRLF → LF): no Windows o git
+# (core.autocrlf) troca o fim de linha no checkout sem alterar o conteúdo.
 protected={
- '03-crm-frontend/src/lib/advogados.ts':'caddfd4fc0690eb16efe11d839d0d314b08e727a04afe94f7320103788a7a4ee',
- '03-crm-frontend/src/lib/agenda.ts':'4aed9e0355fba9545e2ee422db4eb81ddaaeb822e63269ecbee6e865486bf5ee',
+ '03-crm-frontend/src/lib/advogados.ts':'e4b8f38336364d721fe61468aa5c99cd89443f5d06acfe220be6a5f1d2086f23',
+ '03-crm-frontend/src/lib/agenda.ts':'bb402cc76667354b4d8500f7db016b1b2086d01e88fbbdcb0c32cac5eb397a94',
  '03-crm-frontend/src/lib/disponibilidade.ts':'a41dd7d431b7f4bb046a63b8bd70c40a68d781312e1d94ea89632fd710642245',
- '03-crm-frontend/src/lib/fichas.ts':'617e9ec1e483fe63d5e331e1e95165b6d67dedb5a42582b9c5ad4fe900c4bfbc',
+ '03-crm-frontend/src/lib/fichas.ts':'7d47d5ca3f3dbf902da954503e52586e27ded8ef6c1da798e4a49c7a7f115515',
  '03-crm-frontend/src/components/auth-provider.tsx':'e231dd519cb9c9f1d3a96dacc7c7e399a1a40566f1228b8c2f9265c68a6fa1e7',
- '03-crm-frontend/src/components/agenda/reuniao-modal.tsx':'a021467e253092dd0c09789efe15751bed78826b3d58a02f1d409ca925b0670c',
- '03-crm-frontend/src/app/painel/page.tsx':'e17b6847dc3be97cd66eeb69305a091e6182de203d21933d73cf9d27a8c36f23',
+ '03-crm-frontend/src/components/agenda/reuniao-modal.tsx':'0c9980e6663a85b17bed166e97cda43ea675999a814346ac80ffb7e306fedd64',
+ '03-crm-frontend/src/app/painel/page.tsx':'fb576cafebf40d7765f00028f8953d5ec41477515b3184205ee112d1d9999182',
  '04-banco-dados/schema.sql':'e9ff8aab1021a7c0cb3e54c4152bdf310bde549dd0507022f98eadd502a42968',
 }
 for rel,expected in protected.items():
-    actual=hashlib.sha256((ROOT/rel).read_bytes()).hexdigest()
+    actual=hashlib.sha256((ROOT/rel).read_bytes().replace(b'\r\n',b'\n')).hexdigest()
     assert actual==expected, f'Arquivo crítico alterado: {rel}'
-assert 'desenvolvedor' in (CLI/'src/lib/advogados.ts').read_text()
+assert 'desenvolvedor' in (CLI/'src/lib/advogados.ts').read_text(encoding='utf-8')
+# v4: cargo 'socio' (supervisão total, fora dos dados de teste) e sócios no rodízio do bot.
+assert '"socio"' in (CLI/'src/lib/advogados.ts').read_text(encoding='utf-8')
+v4=(ROOT/'04-banco-dados/migrations/20261118_v4_cargo_socio.sql').read_text(encoding='utf-8')
+assert re.search(r'BEGIN\s*;',v4) and v4.count('$$') % 2 == 0 and v4.rstrip().endswith('=====') and 'COMMIT;' in v4
+assert 'DROP TABLE' not in v4.upper()
+assert "outro.cargo IN ('advogado', 'socio', 'estagiario')" in v4, 'sócio não pode ver contas desenvolvedor'
+assert v4.count("cargo IN ('advogado','socio')") == 3, 'dfu_ofertar/dfu_criar_ficha/dfu_confirmar devem incluir sócios'
+assert "cargo='advogado'" not in v4, 'rodízio do bot não pode excluir sócios'
+assert 'estagiario' not in v4.split('7. RODÍZIO DO BOT')[1], 'estagiário nunca entra no rodízio'
+assert "SELECT cargo = 'socio' INTO v_escritorio" in v4
 # v3: o item virou "Atendimentos" (inbox bot + humano); o que importa é a rota no menu.
-assert '"/painel/atendimentos"' in (CLI/'src/components/painel/sidebar.tsx').read_text()
-assert 'FilaFichas' in (CLI/'src/app/painel/page.tsx').read_text(), 'Painel original de fichas deve ser preservado'
-assert 'ConversasBotPage' in (CLI/'src/app/painel/atendimentos/page.tsx').read_text(), 'Tela do bot deve ficar na rota separada' 
-assert 'dfu_assumir_atendimento' in (CLI/'src/app/painel/atendimentos/page.tsx').read_text()
+assert '"/painel/atendimentos"' in (CLI/'src/components/painel/sidebar.tsx').read_text(encoding='utf-8')
+assert 'FilaFichas' in (CLI/'src/app/painel/page.tsx').read_text(encoding='utf-8'), 'Painel original de fichas deve ser preservado'
+assert 'ConversasBotPage' in (CLI/'src/app/painel/atendimentos/page.tsx').read_text(encoding='utf-8'), 'Tela do bot deve ficar na rota separada' 
+assert 'dfu_assumir_atendimento' in (CLI/'src/app/painel/atendimentos/page.tsx').read_text(encoding='utf-8')
 
 # Não incluir dados reais/sigilos em pacote de código.
 assert not list(ROOT.rglob('Planilha1*.csv'))

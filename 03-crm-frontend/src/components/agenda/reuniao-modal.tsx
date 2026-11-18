@@ -5,6 +5,7 @@ import { CalendarPlus, CircleAlert, Info, LoaderCircle, Pencil, X } from "lucide
 import {
   AREAS_JURIDICAS,
   isAreaJuridica,
+  rotuloMembro,
   type Advogado,
   type AreaJuridica,
   type MembroEquipe,
@@ -394,7 +395,7 @@ export function ReuniaoModal({ perfil, responsaveis, eventos, evento, onFechar, 
               >
                 {responsaveis.map((r) => (
                   <option key={r.id} value={r.id}>
-                    {r.id === perfil.id ? `${r.nome} (você)` : `${r.nome} · estagiário(a)`}
+                    {rotuloMembro(r, perfil.id)}
                   </option>
                 ))}
               </select>

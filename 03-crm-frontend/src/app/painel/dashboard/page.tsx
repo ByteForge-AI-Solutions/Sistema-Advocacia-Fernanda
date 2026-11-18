@@ -114,7 +114,7 @@ export default function DashboardPage() {
           </h1>
           <p className="mt-1 text-sm text-slate-500">
             {dados?.escopo === "escritorio"
-              ? "Visão do escritório (contas de teste não entram nas contagens)."
+              ? "Visão de sócio: todo o escritório (contas de teste não entram nas contagens)."
               : "Seus números (e os da sua equipe, se houver)."}{" "}
             Período: {fmtData.format(intervalo.inicio)} a {fmtData.format(fimInclusivo)}.
           </p>
@@ -223,6 +223,7 @@ export default function DashboardPage() {
                         <td className="py-2.5 pr-3 text-slate-800">
                           {a.nome}
                           {a.cargo === "estagiario" && <span className="ml-1 text-xs text-slate-400">· estagiário(a)</span>}
+                          {a.cargo === "socio" && <span className="ml-1 text-xs text-slate-400">· sócio(a)</span>}
                         </td>
                         <td className="py-2.5 pr-3">
                           <span className="flex items-center gap-2">

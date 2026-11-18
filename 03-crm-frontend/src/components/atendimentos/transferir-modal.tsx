@@ -4,10 +4,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRightLeft, LoaderCircle, X } from "lucide-react";
 import type { MembroDestino } from "@/lib/atendimentos";
 
-/** Destinos válidos (mesma regra da RPC crm_atendimento_transferir). */
-export function destinosTransferencia(equipe: MembroDestino[], meuId: string, atualId: string | null) {
+/**
+ * Destinos válidos (mesma regra da RPC crm_atendimento_transferir, migração v4):
+ * titular ativo (advogado ou sócio) ou estagiário que eu supervisiono; o sócio
+ * pode transferir para qualquer estagiário.
+ */
+export function destinosTransferencia(equipe: MembroDestino[], meuId: string, atualId: string | null, souSocio = false) {
   return equipe.filter(
-    (m) => m.id !== atualId && (m.cargo === "advogado" || (m.cargo === "estagiario" && m.supervisor_id === meuId)),
+    (m) =>
+      m.id !== atualId &&
+      (m.cargo === "advogado" ||
+        m.cargo === "socio" ||
+        (m.cargo === "estagiario" && (souSocio || m.supervisor_id === meuId))),
   );
 }
 
@@ -15,17 +23,19 @@ export function TransferirModal({
   equipe,
   meuId,
   atualId,
+  souSocio = false,
   onConfirmar,
   onFechar,
 }: {
   equipe: MembroDestino[];
   meuId: string;
   atualId: string | null;
+  souSocio?: boolean;
   onConfirmar: (destinoId: string) => Promise<boolean>;
   onFechar: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const opcoes = useMemo(() => destinosTransferencia(equipe, meuId, atualId), [equipe, meuId, atualId]);
+  const opcoes = useMemo(() => destinosTransferencia(equipe, meuId, atualId, souSocio), [equipe, meuId, atualId, souSocio]);
   const [destino, setDestino] = useState(opcoes[0]?.id ?? "");
   const [enviando, setEnviando] = useState(false);
 
@@ -74,7 +84,7 @@ export function TransferirModal({
           >
             {opcoes.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.nome} {m.cargo === "estagiario" ? "· estagiário(a)" : ""}
+                {m.nome} {m.cargo === "estagiario" ? "· estagiário(a)" : m.cargo === "socio" ? "· sócio(a)" : ""}
               </option>
             ))}
           </select>

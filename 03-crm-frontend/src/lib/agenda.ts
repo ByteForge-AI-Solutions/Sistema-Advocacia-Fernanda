@@ -1,7 +1,7 @@
 import type { PostgrestError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase/client";
 import {
-  buscarEstagiariosSupervisionados,
+  buscarEquipeVisivel,
   type Advogado,
   type AreaJuridica,
   type MembroEquipe,
@@ -44,8 +44,10 @@ export interface AgendaAdvogado {
 
 /** Compromisso pronto para a tela. */
 export interface EventoAgenda extends AgendaAdvogado {
-  /** Preenchido quando o responsável é um estagiário supervisionado pelo usuário. */
+  /** Preenchido quando o responsável é um estagiário (supervisionado pelo usuário ou, para sócios, de qualquer titular). */
   estagiario: MembroEquipe | null;
+  /** Responsável quando não é o usuário logado (estagiário ou, para sócios, outro titular). */
+  responsavel: MembroEquipe | null;
   /** Cliente da ficha vinculada; null se não houver vínculo ou se o usuário não puder ver a ficha (RLS). */
   ficha: { id: string; nome_cliente: string } | null;
 }
@@ -88,7 +90,7 @@ function motivoDoErro(error: PostgrestError): MotivoErroAgenda {
   return "outro";
 }
 
-/** Equipe visível ao usuário (ele mesmo + estagiários supervisionados), na ordem de exibição. */
+/** Equipe visível ao usuário (ele mesmo primeiro; ver buscarEquipeVisivel), na ordem de exibição. */
 export interface ContextoAgenda {
   eventos: EventoAgenda[];
   responsaveis: MembroEquipe[];
@@ -96,14 +98,14 @@ export interface ContextoAgenda {
 
 /**
  * Agenda visível para o usuário, em ordem cronológica (data_hora_inicio crescente):
+ * - sócio: de todo o escritório (exceto contas 'desenvolvedor');
  * - titular: compromissos dele + dos estagiários que supervisiona;
- * - estagiário: só os dele.
+ * - estagiário/desenvolvedor: só os dele.
  * O RLS (pode_acessar_ficha) aplica a mesma regra no banco.
  */
 export async function buscarAgenda(perfil: Advogado): Promise<ContextoAgenda> {
-  const estagiarios = await buscarEstagiariosSupervisionados(perfil);
-  const estagiarioPorId = new Map(estagiarios.map((e) => [e.id, e]));
-  const responsaveis = [{ id: perfil.id, nome: perfil.nome }, ...estagiarios];
+  const responsaveis = await buscarEquipeVisivel(perfil);
+  const membroPorId = new Map(responsaveis.map((m) => [m.id, m]));
 
   const { data, error } = await supabase
     .from("agenda_advogados")
@@ -122,7 +124,8 @@ export async function buscarAgenda(perfil: Advogado): Promise<ContextoAgenda> {
     eventos: (data ?? []).map((e) => ({
       ...e,
       ficha: e.ficha ?? null,
-      estagiario: estagiarioPorId.get(e.advogado_id) ?? null,
+      responsavel: e.advogado_id === perfil.id ? null : (membroPorId.get(e.advogado_id) ?? null),
+      estagiario: membroPorId.get(e.advogado_id)?.cargo === "estagiario" ? (membroPorId.get(e.advogado_id) ?? null) : null,
     })),
   };
 }

@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, Inbox, ListFilter, LoaderCircle, RefreshCw } from "lucide-react";
-import type { Advogado } from "@/lib/advogados";
+import { CircleAlert, Inbox, ListFilter, LoaderCircle, RefreshCw, UsersRound } from "lucide-react";
+import { buscarEquipeVisivel, ehSocio, ehTitular, rotuloMembro, type Advogado, type MembroEquipe } from "@/lib/advogados";
 import {
   PRIORIDADES,
   PRIORIDADE_LABEL,
@@ -16,6 +16,8 @@ import { PRIORIDADE_ESTILO } from "@/components/fichas/badges";
 import { FichaCard } from "@/components/fichas/ficha-card";
 
 type Filtro = "todos" | StatusAtendimento;
+/** "todos", "sem" (sem responsável) ou o id de um membro da equipe. */
+type FiltroResponsavel = string;
 
 export function FilaFichas({ perfil }: { perfil: Advogado }) {
   const [fichas, setFichas] = useState<Ficha[]>([]);
@@ -23,13 +25,16 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
   const [erro, setErro] = useState<string | null>(null);
   const [filtro, setFiltro] = useState<Filtro>("todos");
   const [versao, setVersao] = useState(0);
+  const [equipe, setEquipe] = useState<MembroEquipe[]>([]);
+  const [responsavel, setResponsavel] = useState<FiltroResponsavel>("todos");
 
   useEffect(() => {
     let atual = true; // descarta respostas de requisições antigas
-    buscarFichas(perfil).then(
-      (dados) => {
+    Promise.all([buscarFichas(perfil), buscarEquipeVisivel(perfil)]).then(
+      ([dados, membros]) => {
         if (!atual) return;
         setFichas(dados);
+        setEquipe(membros);
         setErro(null);
         setCarregando(false);
       },
@@ -50,28 +55,37 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
     setVersao((v) => v + 1);
   }
 
+  // Filtro por responsável (sócio: qualquer pessoa do escritório; titular: ele e os estagiários).
+  const doResponsavel = useMemo(() => {
+    if (responsavel === "todos") return fichas;
+    if (responsavel === "sem") return fichas.filter((f) => f.advogado_id === null);
+    return fichas.filter((f) => f.advogado_id === responsavel);
+  }, [fichas, responsavel]);
+  const qtdSemResponsavel = useMemo(() => fichas.filter((f) => f.advogado_id === null).length, [fichas]);
+  const mostrarFiltroResponsavel = equipe.length > 1 || qtdSemResponsavel > 0;
+
   const contagemStatus = useMemo(() => {
-    const c: Record<Filtro, number> = { todos: fichas.length, novo: 0, em_analise: 0, agendado: 0, finalizado: 0 };
-    for (const f of fichas) if (f.status) c[f.status]++;
+    const c: Record<Filtro, number> = { todos: doResponsavel.length, novo: 0, em_analise: 0, agendado: 0, finalizado: 0 };
+    for (const f of doResponsavel) if (f.status) c[f.status]++;
     return c;
-  }, [fichas]);
+  }, [doResponsavel]);
 
   const abertasPorPrioridade = useMemo(() => {
     const c = { alta: 0, media: 0, baixa: 0 };
-    for (const f of fichas) if (f.status !== "finalizado" && f.prioridade) c[f.prioridade]++;
+    for (const f of doResponsavel) if (f.status !== "finalizado" && f.prioridade) c[f.prioridade]++;
     return c;
-  }, [fichas]);
+  }, [doResponsavel]);
 
   const qtdSupervisao = useMemo(() => fichas.filter((f) => f.estagiario).length, [fichas]);
 
   const visiveis = useMemo(() => {
-    if (filtro !== "todos") return fichas.filter((f) => f.status === filtro);
+    if (filtro !== "todos") return doResponsavel.filter((f) => f.status === filtro);
     // Em "Todas", as finalizadas descem para o fim sem quebrar a ordem de prioridade/chegada.
     return [
-      ...fichas.filter((f) => f.status !== "finalizado"),
-      ...fichas.filter((f) => f.status === "finalizado"),
+      ...doResponsavel.filter((f) => f.status !== "finalizado"),
+      ...doResponsavel.filter((f) => f.status === "finalizado"),
     ];
-  }, [fichas, filtro]);
+  }, [doResponsavel, filtro]);
 
   const opcoes: { valor: Filtro; label: string }[] = [
     { valor: "todos", label: "Todas" },
@@ -139,11 +153,34 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
         </button>
       </div>
 
-      {perfil.cargo === "advogado" && qtdSupervisao > 0 && (
+      {mostrarFiltroResponsavel && (
+        <div className="mt-3 flex items-center gap-2">
+          <UsersRound className="size-4 text-slate-400" aria-hidden />
+          <label htmlFor="filtro-responsavel" className="text-sm text-slate-600">
+            {ehSocio(perfil) ? "Advogado(a):" : "Responsável:"}
+          </label>
+          <select
+            id="filtro-responsavel"
+            value={responsavel}
+            onChange={(e) => setResponsavel(e.target.value)}
+            className="rounded-lg border-0 bg-white py-1.5 pl-3 pr-8 text-sm text-slate-700 ring-1 ring-inset ring-slate-200 focus:ring-2 focus:ring-navy-500"
+          >
+            <option value="todos">{ehSocio(perfil) ? "Todo o escritório" : "Toda a equipe"}</option>
+            {equipe.map((m) => (
+              <option key={m.id} value={m.id}>
+                {rotuloMembro(m, perfil.id)}
+              </option>
+            ))}
+            {qtdSemResponsavel > 0 && <option value="sem">Sem responsável ({qtdSemResponsavel})</option>}
+          </select>
+        </div>
+      )}
+
+      {ehTitular(perfil.cargo) && qtdSupervisao > 0 && (
         <p className="mt-3 text-xs text-slate-500">
           {qtdSupervisao === 1
-            ? "1 ficha está com estagiário(a) sob sua supervisão."
-            : `${qtdSupervisao} fichas estão com estagiários sob sua supervisão.`}
+            ? `1 ficha está com estagiário(a)${ehSocio(perfil) ? "" : " sob sua supervisão"}.`
+            : `${qtdSupervisao} fichas estão com estagiários${ehSocio(perfil) ? "" : " sob sua supervisão"}.`}
         </p>
       )}
 
@@ -182,7 +219,7 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
           <ul className="space-y-3">
             {visiveis.map((ficha) => (
               <li key={ficha.id}>
-                <FichaCard ficha={ficha} />
+                <FichaCard ficha={ficha} podeAssumir={ehTitular(perfil.cargo)} onAlterada={atualizar} />
               </li>
             ))}
           </ul>
