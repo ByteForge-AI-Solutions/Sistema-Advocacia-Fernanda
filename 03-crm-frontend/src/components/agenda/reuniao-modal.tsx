@@ -401,6 +401,9 @@ export function ReuniaoModal({ perfil, responsaveis, eventos, evento, onFechar, 
               {perfil.cargo === "estagiario" && (
                 <p className="mt-1 text-xs text-slate-500">Estagiários agendam apenas para si.</p>
               )}
+              {perfil.cargo === "desenvolvedor" && (
+                <p className="mt-1 text-xs text-slate-500">Conta de teste: agenda apenas para si.</p>
+              )}
             </div>
 
             {/* Área */}

@@ -3,7 +3,7 @@ CREATE TABLE advogados (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   nome TEXT NOT NULL,
   email TEXT UNIQUE,
-  cargo TEXT DEFAULT 'advogado', -- 'advogado' ou 'estagiario'
+  cargo TEXT DEFAULT 'advogado', -- 'advogado', 'estagiario' ou 'desenvolvedor' (ver seção 8)
   supervisor_id UUID REFERENCES advogados(id), -- Preenchido apenas para estagiários
   areas_atuacao TEXT[] NOT NULL,
   ativo BOOLEAN DEFAULT true,
@@ -64,6 +64,8 @@ INSERT INTO advogados (nome, areas_atuacao, cargo, supervisor_id) VALUES
 --     delegar fichas para esses estagiários e pegá-las de volta.
 --   * Estagiário (cargo = 'estagiario') vê e edita só as fichas
 --     atribuídas a ele e não pode repassá-las a ninguém.
+--   * Desenvolvedor (cargo = 'desenvolvedor'): mesmo escopo do estagiário,
+--     só o que está atribuído ao próprio id. Não supervisiona ninguém.
 --   * Advogado inativo (ativo = false) não vê nada.
 --   * INSERT e DELETE não são liberados para usuários do CRM. O bot (n8n)
 --     cria as fichas com a chave service_role, que ignora o RLS e deve
@@ -93,8 +95,8 @@ AS $$
     WHERE lower(eu.email) = lower(auth.jwt() ->> 'email')
       AND eu.ativo IS TRUE
       AND (
-        -- ficha atribuída ao próprio usuário (titular ou estagiário)
-        (eu.id = responsavel_id AND eu.cargo IN ('advogado', 'estagiario'))
+        -- ficha atribuída ao próprio usuário (titular, estagiário ou desenvolvedor)
+        (eu.id = responsavel_id AND eu.cargo IN ('advogado', 'estagiario', 'desenvolvedor'))
         OR
         -- titular enxergando a ficha de um estagiário que supervisiona
         (
@@ -341,3 +343,65 @@ DROP POLICY IF EXISTS "disponibilidade: exclusão pelo próprio" ON public.dispo
 CREATE POLICY "disponibilidade: exclusão pelo próprio" ON public.disponibilidade_advogados
   FOR DELETE TO authenticated
   USING (advogado_id = (SELECT public.advogado_atual_id()));
+
+
+-- =====================================================================
+-- 8. CARGO 'desenvolvedor'
+-- ---------------------------------------------------------------------
+-- Conta de teste/manutenção do CRM. Idempotente.
+--
+-- Escopo (definido por pode_acessar_ficha, seção 5.2): o desenvolvedor vê
+-- e edita SOMENTE o que estiver atribuído ao próprio advogados.id, ou seja,
+-- fichas, agenda e disponibilidade de teste. Dados reais de clientes ficam
+-- fora do alcance (LGPD). Ele não supervisiona ninguém e NÃO deve entrar
+-- no rodízio do bot, que precisa filtrar cargo = 'advogado'.
+--
+-- Para aplicar num banco existente, rode a função 5.2 (CREATE OR REPLACE
+-- FUNCTION public.pode_acessar_ficha ...) e esta seção.
+-- =====================================================================
+
+-- 8.1 Restrição de cargo. Se já houver um CHECK envolvendo "cargo" em
+-- advogados (criado fora deste arquivo), ele é trocado por um que aceita
+-- os três cargos. Se não houver, nada muda: a validação continua no CRM
+-- (validarPerfil). Para criar o CHECK mesmo assim, troque
+-- "IF tinha_check THEN" por "IF true THEN". Antes, confira que não há
+-- outros valores com:
+--   SELECT cargo, count(*) FROM public.advogados GROUP BY 1;
+DO $$
+DECLARE
+  r record;
+  tinha_check boolean := false;
+BEGIN
+  FOR r IN
+    SELECT conname
+    FROM pg_constraint
+    WHERE conrelid = 'public.advogados'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) ILIKE '%cargo%'
+  LOOP
+    EXECUTE format('ALTER TABLE public.advogados DROP CONSTRAINT %I', r.conname);
+    RAISE NOTICE 'CHECK removido: %', r.conname;
+    tinha_check := true;
+  END LOOP;
+
+  IF tinha_check THEN
+    ALTER TABLE public.advogados
+      ADD CONSTRAINT advogados_cargo_valido
+      CHECK (cargo IN ('advogado', 'estagiario', 'desenvolvedor'));
+    RAISE NOTICE 'CHECK advogados_cargo_valido criado com os 3 cargos.';
+  ELSE
+    RAISE NOTICE 'Nenhum CHECK de cargo encontrado; nada a alterar.';
+  END IF;
+END $$;
+
+-- 8.2 Exemplo de conta de desenvolvedor (ajuste nome e e-mail; o e-mail
+-- precisa ser o mesmo do usuário criado em Authentication → Users).
+-- INSERT INTO public.advogados (nome, email, cargo, areas_atuacao, ativo)
+-- VALUES ('Dev Teste', 'dev@exemplo.com', 'desenvolvedor', '{}', true);
+
+-- 8.3 Ficha fictícia para testar a fila (dados inventados, nunca reais).
+-- INSERT INTO public.fichas_clientes
+--   (nome_cliente, telefone, area_identificada, prioridade, resumo_fatos, advogado_id)
+-- SELECT 'Cliente Teste', '5500000000000', 'civil', 'alta',
+--        'Ficha fictícia para teste do CRM.', id
+-- FROM public.advogados WHERE cargo = 'desenvolvedor' LIMIT 1;

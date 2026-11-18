@@ -40,6 +40,12 @@ export function Sidebar({ perfil, onSair }: { perfil: Advogado; onSair: () => vo
           <span className="text-[10px] uppercase tracking-[0.2em] text-navy-300">CRM</span>
         </div>
 
+        {perfil.cargo === "desenvolvedor" && (
+          <p className="mx-3 mt-4 rounded-md bg-amber-400/15 px-3 py-1.5 text-center text-[11px] font-semibold uppercase tracking-wide text-amber-200 ring-1 ring-amber-300/30">
+            Modo desenvolvedor
+          </p>
+        )}
+
         <nav aria-label="Menu principal" className="flex-1 space-y-1 px-3 py-6">
           {ITENS.map(({ href, label, icone: Icone }) => {
             const ativo = estaAtivo(pathname, href);
@@ -89,6 +95,11 @@ export function Sidebar({ perfil, onSair }: { perfil: Advogado; onSair: () => vo
           <div className="flex items-center gap-2 text-white">
             <Scale className="size-5" aria-hidden />
             <span className="text-sm font-semibold">Dias e Fernandes</span>
+            {perfil.cargo === "desenvolvedor" && (
+              <span className="rounded bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200 ring-1 ring-amber-300/30">
+                Dev
+              </span>
+            )}
           </div>
           <button
             type="button"

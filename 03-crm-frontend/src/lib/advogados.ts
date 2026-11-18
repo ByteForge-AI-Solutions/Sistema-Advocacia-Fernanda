@@ -1,6 +1,13 @@
 import { supabase } from "@/lib/supabase/client";
 
-export const CARGOS = ["advogado", "estagiario"] as const;
+/**
+ * - advogado: titular; recebe fichas do bot e supervisiona estagiários.
+ * - estagiario: recebe fichas só por delegação do supervisor.
+ * - desenvolvedor: conta de teste/manutenção. Vê e edita apenas o que está atribuído
+ *   ao próprio id (mesmo escopo de um estagiário, sem supervisor). Não deve entrar no
+ *   rodízio do bot nem supervisionar ninguém; dados reais de clientes ficam fora do alcance.
+ */
+export const CARGOS = ["advogado", "estagiario", "desenvolvedor"] as const;
 export type Cargo = (typeof CARGOS)[number];
 
 export const AREAS_JURIDICAS = {
@@ -16,6 +23,7 @@ export type AreaJuridica = keyof typeof AREAS_JURIDICAS;
 export const CARGO_LABEL: Record<Cargo, string> = {
   advogado: "Advogado(a) titular",
   estagiario: "Estagiário(a)",
+  desenvolvedor: "Desenvolvedor(a)",
 };
 
 export interface Advogado {
@@ -49,8 +57,8 @@ export function isAreaJuridica(valor: unknown): valor is AreaJuridica {
 
 /**
  * Regras de hierarquia validadas no código (o banco não tem CHECK):
- * - cargo deve ser 'advogado' ou 'estagiario'
- * - titular não tem supervisor; estagiário obrigatoriamente tem
+ * - cargo deve ser 'advogado', 'estagiario' ou 'desenvolvedor'
+ * - titular e desenvolvedor não têm supervisor; estagiário obrigatoriamente tem
  * Retorna a lista de problemas encontrados (vazia = válido).
  */
 export function validarPerfil(dados: {
@@ -61,9 +69,13 @@ export function validarPerfil(dados: {
   const erros: string[] = [];
 
   if (!isCargo(dados.cargo)) {
-    erros.push(`Cargo inválido: "${String(dados.cargo)}". Use "advogado" ou "estagiario".`);
+    erros.push(
+      `Cargo inválido: "${String(dados.cargo)}". Use ${CARGOS.map((c) => `"${c}"`).join(", ")}.`,
+    );
   } else if (dados.cargo === "advogado" && dados.supervisor_id) {
     erros.push("Advogado titular não pode ter supervisor.");
+  } else if (dados.cargo === "desenvolvedor" && dados.supervisor_id) {
+    erros.push("Desenvolvedor não pode ter supervisor.");
   } else if (dados.cargo === "estagiario" && !dados.supervisor_id) {
     erros.push("Estagiário precisa ter um advogado supervisor.");
   }

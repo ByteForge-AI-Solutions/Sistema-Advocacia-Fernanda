@@ -16,7 +16,9 @@ export default function PainelPage() {
       <p className="mt-1 text-sm text-slate-500">
         {perfil.cargo === "advogado"
           ? "Sua fila de atendimentos e as fichas da sua equipe, ordenadas por prioridade e chegada."
-          : "As fichas delegadas a você, ordenadas por prioridade e chegada."}
+          : perfil.cargo === "desenvolvedor"
+            ? "Conta de teste: aqui aparecem só as fichas atribuídas ao seu usuário."
+            : "As fichas delegadas a você, ordenadas por prioridade e chegada."}
       </p>
 
       <div className="mt-8">

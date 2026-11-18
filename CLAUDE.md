@@ -21,7 +21,7 @@ Advogados titulares e estagiários do escritório.
 | `id` | UUID PK | `gen_random_uuid()` |
 | `nome` | TEXT NOT NULL | |
 | `email` | TEXT UNIQUE | Usado para vincular ao login (Supabase Auth). O `schema.sql` não preenche, mas os e-mails já foram cadastrados direto no Supabase. |
-| `cargo` | TEXT | `'advogado'` (padrão) ou `'estagiario'` |
+| `cargo` | TEXT | `'advogado'` (padrão), `'estagiario'` ou `'desenvolvedor'` (conta de teste, seção 8) |
 | `supervisor_id` | UUID FK → `advogados.id` | Preenchido **apenas** para estagiários |
 | `areas_atuacao` | TEXT[] NOT NULL | Valores da lista de áreas abaixo |
 | `ativo` | BOOLEAN | Padrão `true`; inativos não recebem casos |
@@ -102,6 +102,7 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
 
 - **Titular:** `cargo = 'advogado'` e `supervisor_id = NULL`.
 - **Estagiário:** `cargo = 'estagiario'` e `supervisor_id` aponta para o titular que supervisiona (autorrelacionamento em `advogados`).
+- **Desenvolvedor:** `cargo = 'desenvolvedor'` e `supervisor_id = NULL`. É uma conta de teste e manutenção. Tem o mesmo escopo do estagiário: vê e edita **só o que está atribuído ao próprio id** (fichas, agenda e disponibilidade de teste) e não supervisiona ninguém. Não tem acesso de leitura a dados reais de clientes (LGPD). A sidebar mostra o selo "Modo desenvolvedor".
 
 Equipe atual (seed):
 
@@ -115,9 +116,9 @@ Equipe atual (seed):
 | Ana Júlia Rodrigues de Souza | estagiario | trabalhista | Fernanda |
 
 Regras confirmadas:
-- **Rodízio automático (bot):** só entram `cargo = 'advogado' AND ativo = true`. Estagiários **nunca** recebem fichas do bot.
+- **Rodízio automático (bot):** só entram `cargo = 'advogado' AND ativo = true`. Estagiários e desenvolvedores **nunca** recebem fichas do bot. O filtro precisa ser `= 'advogado'`, e não `<> 'estagiario'`.
 - **Delegação:** o estagiário só recebe uma ficha quando o titular supervisor a delega manualmente no CRM.
-- **Validação de cargo:** é feita no código do CRM, não no banco (não há CHECK). A função `validarPerfil` em `03-crm-frontend/src/lib/advogados.ts` exige que `cargo` seja `'advogado'` ou `'estagiario'`, que o titular não tenha supervisor e que o estagiário tenha. Reutilize essa função em qualquer tela que crie ou edite advogados.
+- **Validação de cargo:** é feita no código do CRM. O `schema.sql` não cria CHECK; a seção 8.1 só atualiza um CHECK de cargo se já existir um no banco. A função `validarPerfil` em `03-crm-frontend/src/lib/advogados.ts` exige que `cargo` esteja em `CARGOS` (`'advogado'`, `'estagiario'`, `'desenvolvedor'`), que titular e desenvolvedor não tenham supervisor e que o estagiário tenha. Ao criar um cargo novo, atualize também `pode_acessar_ficha` (seção 5.2); sem isso, o RLS esconde tudo do usuário sem dar erro. Reutilize essa função em qualquer tela que crie ou edite advogados.
 - **Login:** o `email` de todos (titulares e estagiária) já está preenchido. O usuário do Supabase Auth é ligado ao registro em `advogados` pelo e-mail, sem diferenciar maiúsculas de minúsculas. Usuário sem registro, inativo ou com cargo inválido é deslogado na hora.
 
 ## As 6 áreas jurídicas
