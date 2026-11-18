@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Clock, Gavel, Paperclip, Phone, CircleAlert } from "lucide-react";
+import { ChevronDown, ChevronUp, Clock, FilePen, Gavel, Paperclip, Phone, CircleAlert } from "lucide-react";
+import { GerarDocumentosModal } from "@/components/documentos/gerar-documentos-modal";
 import type { Ficha } from "@/lib/fichas";
 import {
   AreaBadge,
@@ -43,6 +44,7 @@ function plural(n: number, singular: string, pluralForm: string) {
 
 export function FichaCard({ ficha }: { ficha: Ficha }) {
   const [expandido, setExpandido] = useState(false);
+  const [documentosAberto, setDocumentosAberto] = useState(false);
   const resumoLongo = ficha.resumo_fatos.length > LIMITE_RESUMO;
   const faixa = ficha.prioridade ? PRIORIDADE_ESTILO[ficha.prioridade].faixa : "bg-slate-300";
   const finalizada = ficha.status === "finalizado";
@@ -126,7 +128,16 @@ export function FichaCard({ ficha }: { ficha: Ficha }) {
               {plural(ficha.qtd_processos, "processo encontrado", "processos encontrados")}
             </span>
           )}
+          <button
+            type="button"
+            onClick={() => setDocumentosAberto(true)}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 transition hover:bg-navy-50"
+          >
+            <FilePen className="size-3.5" aria-hidden />
+            Gerar documentos
+          </button>
         </footer>
+        {documentosAberto && <GerarDocumentosModal fichaId={ficha.id} onFechar={() => setDocumentosAberto(false)} />}
       </div>
     </article>
   );

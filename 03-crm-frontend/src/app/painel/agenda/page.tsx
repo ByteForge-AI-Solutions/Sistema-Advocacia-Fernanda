@@ -1,8 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CalendarDays, CalendarX, CircleAlert, Clock, LoaderCircle, Pencil, Plus, RefreshCw, UserRound } from "lucide-react";
+import { useRouter } from "next/navigation";
+import {
+  CalendarDays,
+  CalendarRange,
+  CalendarX,
+  CircleAlert,
+  Clock,
+  List,
+  LoaderCircle,
+  Pencil,
+  Plus,
+  RefreshCw,
+  UserRound,
+} from "lucide-react";
+import { CalendarioMensal, limitesDoMes, primeiroDiaDoMes } from "@/components/agenda/calendario-mensal";
 import { ReuniaoModal } from "@/components/agenda/reuniao-modal";
+import { buscarFeriados, buscarPrazosPeriodo, type PrazoProcessual } from "@/lib/prazos";
 import { useAuth } from "@/components/auth-provider";
 import { AreaBadge, PRIORIDADE_ESTILO, PrioridadeBadge, SupervisaoBadge } from "@/components/fichas/badges";
 import { Toast } from "@/components/toast";
@@ -19,6 +34,7 @@ import { chaveDia, fmtHora } from "@/lib/datas";
 import { paraPrioridade } from "@/lib/fichas";
 
 type Periodo = "proximos" | "todos";
+type Visao = "mes" | "lista";
 type EstadoModal = { modo: "novo" } | { modo: "editar"; evento: EventoAgenda } | null;
 
 const fmtDia = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" });
@@ -153,6 +169,35 @@ export default function AgendaPage() {
   const [erro, setErro] = useState<string | null>(null);
   const [periodo, setPeriodo] = useState<Periodo>("proximos");
   const [versao, setVersao] = useState(0);
+  const router = useRouter();
+  const [visao, setVisao] = useState<Visao>("mes");
+  const [filtroResponsavel, setFiltroResponsavel] = useState<string>("todos");
+  const [mes, setMes] = useState<Date>(() => primeiroDiaDoMes(new Date()));
+  const [prazosMes, setPrazosMes] = useState<PrazoProcessual[]>([]);
+  const [feriados, setFeriados] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let atual = true;
+    buscarFeriados().then((f) => atual && setFeriados(f));
+    return () => {
+      atual = false;
+    };
+  }, []);
+
+  // Prazos fatais do mês visível (dos responsáveis que o usuário pode ver).
+  useEffect(() => {
+    if (responsaveis.length === 0) return;
+    let atual = true;
+    const { de, ate } = limitesDoMes(mes);
+    buscarPrazosPeriodo(
+      responsaveis.map((r) => r.id),
+      de,
+      ate,
+    ).then((p) => atual && setPrazosMes(p));
+    return () => {
+      atual = false;
+    };
+  }, [mes, responsaveis, versao]);
 
   useEffect(() => {
     if (!perfil) return;
@@ -197,14 +242,24 @@ export default function AgendaPage() {
 
   const podeAgendar = !carregando && !erro && responsaveis.length > 0;
 
+  // Filtro por advogado: o titular vê a própria agenda e a dos estagiários que supervisiona.
+  const eventosFiltrados = useMemo(
+    () => (filtroResponsavel === "todos" ? eventos : eventos.filter((e) => e.advogado_id === filtroResponsavel)),
+    [eventos, filtroResponsavel],
+  );
+  const prazosFiltrados = useMemo(
+    () => (filtroResponsavel === "todos" ? prazosMes : prazosMes.filter((p) => p.advogado_id === filtroResponsavel)),
+    [prazosMes, filtroResponsavel],
+  );
+
   const proximos = useMemo(
-    () => (agora ? eventos.filter((e) => terminoDoEvento(e) >= agora) : []),
-    [eventos, agora],
+    () => (agora ? eventosFiltrados.filter((e) => terminoDoEvento(e) >= agora) : []),
+    [eventosFiltrados, agora],
   );
 
   // Já vem ordenado por data_hora_inicio (crescente) do banco; aqui só agrupamos por dia.
   const grupos = useMemo(() => {
-    const lista = periodo === "proximos" ? proximos : eventos;
+    const lista = periodo === "proximos" ? proximos : eventosFiltrados;
     const mapa = new Map<string, { dia: Date; itens: EventoAgenda[] }>();
     for (const e of lista) {
       const inicio = new Date(e.data_hora_inicio);
@@ -213,11 +268,11 @@ export default function AgendaPage() {
       mapa.get(chave)!.itens.push(e);
     }
     return [...mapa.entries()];
-  }, [periodo, proximos, eventos]);
+  }, [periodo, proximos, eventosFiltrados]);
 
   const opcoes: { valor: Periodo; label: string; qtd: number }[] = [
     { valor: "proximos", label: "Próximos", qtd: proximos.length },
-    { valor: "todos", label: "Todos", qtd: eventos.length },
+    { valor: "todos", label: "Todos", qtd: eventosFiltrados.length },
   ];
 
   return (
@@ -231,7 +286,44 @@ export default function AgendaPage() {
           <p className="mt-1 text-sm text-slate-500">Compromissos em ordem cronológica.</p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div role="group" aria-label="Visualização" className="flex rounded-lg bg-white p-0.5 ring-1 ring-inset ring-slate-200">
+            {(
+              [
+                { valor: "mes", label: "Mês", icone: CalendarRange },
+                { valor: "lista", label: "Lista", icone: List },
+              ] as const
+            ).map(({ valor, label, icone: Icone }) => (
+              <button
+                key={valor}
+                type="button"
+                onClick={() => setVisao(valor)}
+                aria-pressed={visao === valor}
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition ${
+                  visao === valor ? "bg-navy-900 text-white" : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Icone className="size-4" aria-hidden />
+                {label}
+              </button>
+            ))}
+          </div>
+          {responsaveis.length > 1 && (
+            <select
+              value={filtroResponsavel}
+              onChange={(e) => setFiltroResponsavel(e.target.value)}
+              aria-label="Filtrar por advogado"
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-navy-500"
+            >
+              <option value="todos">Toda a equipe</option>
+              {responsaveis.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.id === perfil?.id ? "Minha agenda" : r.nome}
+                </option>
+              ))}
+            </select>
+          )}
+          {visao === "lista" && (
           <div role="group" aria-label="Período" className="flex gap-1.5">
             {opcoes.map(({ valor, label, qtd }) => {
               const ativo = periodo === valor;
@@ -257,6 +349,7 @@ export default function AgendaPage() {
               );
             })}
           </div>
+          )}
           <button
             type="button"
             onClick={atualizar}
@@ -294,6 +387,17 @@ export default function AgendaPage() {
               </button>
             </div>
           </div>
+        ) : visao === "mes" && agora ? (
+          <CalendarioMensal
+            mes={mes}
+            eventos={eventosFiltrados}
+            prazos={prazosFiltrados}
+            feriados={feriados}
+            agora={agora}
+            onMudarMes={setMes}
+            onAbrirEvento={(evento) => setModal({ modo: "editar", evento })}
+            onAbrirPrazo={() => router.push("/painel/processos")}
+          />
         ) : grupos.length === 0 || !agora ? (
           <div className="flex flex-col items-center rounded-xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center">
             <CalendarX className="size-8 text-slate-300" aria-hidden />

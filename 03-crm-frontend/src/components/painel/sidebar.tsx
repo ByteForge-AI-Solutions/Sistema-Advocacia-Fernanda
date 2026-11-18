@@ -2,7 +2,17 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarClock, CalendarDays, Inbox, LogOut, Scale, MessageCircle, type LucideIcon } from "lucide-react";
+import {
+  CalendarClock,
+  CalendarDays,
+  ChartNoAxesColumn,
+  Gavel,
+  Inbox,
+  LogOut,
+  MessageCircle,
+  Scale,
+  type LucideIcon,
+} from "lucide-react";
 import { CARGO_LABEL, type Advogado } from "@/lib/advogados";
 
 interface ItemMenu {
@@ -11,12 +21,31 @@ interface ItemMenu {
   icone: LucideIcon;
 }
 
-const ITENS: ItemMenu[] = [
-  { href: "/painel", label: "Fila de atendimentos", icone: Inbox },
-  { href: "/painel/agenda", label: "Agenda", icone: CalendarDays },
-  { href: "/painel/atendimentos", label: "Conversas do bot", icone: MessageCircle },
-  { href: "/painel/disponibilidade", label: "Disponibilidade", icone: CalendarClock },
+/** Menu em seções. Para adicionar uma página, inclua o item na seção adequada. */
+const SECOES: { titulo: string; itens: ItemMenu[] }[] = [
+  {
+    titulo: "Atendimento",
+    itens: [
+      { href: "/painel", label: "Fila de fichas", icone: Inbox },
+      // Inbox omnichannel (antes "Conversas do bot"): bot + equipe no WhatsApp.
+      { href: "/painel/atendimentos", label: "Atendimentos", icone: MessageCircle },
+    ],
+  },
+  {
+    titulo: "Agenda e prazos",
+    itens: [
+      { href: "/painel/agenda", label: "Agenda", icone: CalendarDays },
+      { href: "/painel/processos", label: "Processos e prazos", icone: Gavel },
+      { href: "/painel/disponibilidade", label: "Disponibilidade", icone: CalendarClock },
+    ],
+  },
+  {
+    titulo: "Gestão",
+    itens: [{ href: "/painel/dashboard", label: "Indicadores", icone: ChartNoAxesColumn }],
+  },
 ];
+
+const ITENS: ItemMenu[] = SECOES.flatMap((s) => s.itens);
 
 function iniciais(nome: string) {
   const partes = nome.trim().split(/\s+/);
@@ -47,23 +76,30 @@ export function Sidebar({ perfil, onSair }: { perfil: Advogado; onSair: () => vo
           </p>
         )}
 
-        <nav aria-label="Menu principal" className="flex-1 space-y-1 px-3 py-6">
-          {ITENS.map(({ href, label, icone: Icone }) => {
-            const ativo = estaAtivo(pathname, href);
-            return (
-              <Link
-                key={href}
-                href={href}
-                aria-current={ativo ? "page" : undefined}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
-                  ativo ? "bg-white/10 text-white" : "text-navy-200 hover:bg-white/5 hover:text-white"
-                }`}
-              >
-                <Icone className="size-4.5" aria-hidden />
-                {label}
-              </Link>
-            );
-          })}
+        <nav aria-label="Menu principal" className="flex-1 space-y-6 overflow-y-auto px-3 py-6">
+          {SECOES.map((secao) => (
+            <div key={secao.titulo}>
+              <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-navy-400">{secao.titulo}</p>
+              <div className="space-y-0.5">
+                {secao.itens.map(({ href, label, icone: Icone }) => {
+                  const ativo = estaAtivo(pathname, href);
+                  return (
+                    <Link
+                      key={href}
+                      href={href}
+                      aria-current={ativo ? "page" : undefined}
+                      className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                        ativo ? "bg-white/10 text-white" : "text-navy-200 hover:bg-white/5 hover:text-white"
+                      }`}
+                    >
+                      <Icone className="size-4.5" aria-hidden />
+                      {label}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         <div className="border-t border-white/10 p-4">

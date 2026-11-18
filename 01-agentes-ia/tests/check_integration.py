@@ -110,7 +110,8 @@ for rel,expected in protected.items():
     actual=hashlib.sha256((ROOT/rel).read_bytes()).hexdigest()
     assert actual==expected, f'Arquivo crítico alterado: {rel}'
 assert 'desenvolvedor' in (CLI/'src/lib/advogados.ts').read_text()
-assert 'Conversas do bot' in (CLI/'src/components/painel/sidebar.tsx').read_text()
+# v3: o item virou "Atendimentos" (inbox bot + humano); o que importa é a rota no menu.
+assert '"/painel/atendimentos"' in (CLI/'src/components/painel/sidebar.tsx').read_text()
 assert 'FilaFichas' in (CLI/'src/app/painel/page.tsx').read_text(), 'Painel original de fichas deve ser preservado'
 assert 'ConversasBotPage' in (CLI/'src/app/painel/atendimentos/page.tsx').read_text(), 'Tela do bot deve ficar na rota separada' 
 assert 'dfu_assumir_atendimento' in (CLI/'src/app/painel/atendimentos/page.tsx').read_text()

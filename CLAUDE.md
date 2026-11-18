@@ -98,6 +98,25 @@ Gravação: `salvarMinhaDisponibilidade` faz **um único upsert por `id`**, reap
 
 Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta REST com a chave anon e `limit=0` devolve `42703` se a coluna não existe e `42501` se existe (anon não tem permissão). Um filtro com valor inválido (`?col=eq.zz`) revela o tipo da coluna na mensagem de erro.
 
+## Migrações, bot e arquivos protegidos
+
+- `04-banco-dados/migrations/` é **incremental**. Nunca reexecute o `schema.sql` inteiro em banco existente. Ordem de aplicação:
+  1. `00_diagnostico_preinstalacao.sql` (só leitura);
+  2. `20261118_bot_unificado.sql` (bot v2.1: tabelas `dfu_*`, trigger `dfu_prevenir_sobreposicao_agenda`);
+  3. `20261118_v3_crm_modulos.sql`.
+- **Hashes:** `01-agentes-ia/tests/check_integration.py` confere o SHA-256 de 8 arquivos: `advogados.ts`, `agenda.ts`, `disponibilidade.ts`, `fichas.ts`, `auth-provider.tsx`, `reuniao-modal.tsx`, `app/painel/page.tsx` e `schema.sql`. **Não edite esses arquivos.** Crie funcionalidade em arquivos novos. Se a mudança for inevitável, atualize o hash no teste e avise a equipe do bot.
+- **Escrita nas `dfu_*`:** o CRM nunca escreve direto nelas. Usa as RPCs `crm_atendimento_*` (assumir, responder, transferir, devolver_bot, encerrar, etiquetas). Também chama a original `dfu_assumir_atendimento` no caso padrão.
+- **Respostas humanas:** entram em `dfu_outbox` (tipo `'resposta'`, `autor_advogado_id` preenchido). O n8n as envia pelo nó "10 | Fila de saída (cada minuto)", com os mesmos portões de compliance. A RPC exige `status = 'humano'` e a janela de 24 h aberta.
+- **Atendimento sem responsável** (`advogado_id` NULL): visível só a titulares (`cargo = 'advogado'`) da área, via `crm_titular_da_area`. Assumir atribui ao titular.
+- **Notas internas:** ficam em `dfu_notas_internas`, sem UPDATE/DELETE. `sistema = true` marca o registro automático das ações.
+- **Prazos:** `processos_prazos` (RLS via `pode_acessar_ficha`). Estagiário não exclui. A data fatal é `date`: use `dataLocal()` para não deslocar o fuso.
+- **Google Calendar (preparação):**
+  - colunas `google_*` e `link_reuniao` em `agenda_advogados`;
+  - fila `agenda_google_fila`, alimentada pelo trigger `crm_agenda_google_sync` apenas para advogados com `agenda_google_contas.ativo`;
+  - RPCs do worker: `crm_google_retirar_fila`, `crm_google_concluir` e `crm_google_aplicar_alteracao`, esta com `crm.origem_sync = 'google'` para não gerar eco;
+  - Edge Function `02-backend-integracao/supabase/functions/google-calendar-webhook`.
+- **Indicadores:** RPC `crm_indicadores` (só contagens). Titular vê o escritório; os demais veem o próprio escopo. Contas `desenvolvedor` ficam fora.
+
 ## Hierarquia: titulares e estagiários
 
 - **Titular:** `cargo = 'advogado'` e `supervisor_id = NULL`.
@@ -161,7 +180,14 @@ Organização:
 - `src/app/painel/layout.tsx`: protege todas as rotas `/painel/*` (manda para `/login` sem sessão) e renderiza a Sidebar. As páginas internas podem assumir que `useAuth().perfil` existe.
 - `src/app/painel/page.tsx`: fila de fichas. `src/app/painel/agenda/page.tsx`: agenda de reuniões em cartões, agrupada por dia, com filtro Próximos/Todos e o botão "Nova reunião". Clicar num cartão abre a edição.
 - `src/components/agenda/reuniao-modal.tsx`: formulário de criar e editar reunião. O responsável só pode ser o usuário ou os estagiários dele. Ao escolher uma ficha, sugere área, prioridade e título. Mostra avisos (não bloqueiam) de dia ou horário fora da grade, limite diário e conflito de horário.
-- `src/app/painel/disponibilidade/page.tsx` + `src/lib/disponibilidade.ts`: grade do próprio advogado (upsert por `advogado_id`).
+- `src/app/painel/disponibilidade/page.tsx` + `src/lib/disponibilidade.ts`: grade do próprio advogado (uma linha por dia, upsert por `id`).
+- **v3 (migração `20261118_v3_crm_modulos.sql`):**
+  - `src/app/painel/atendimentos` (inbox em 3 colunas) + `src/components/atendimentos/*` + `src/lib/atendimentos.ts`.
+  - `src/app/painel/processos` + `src/components/processos/prazo-modal.tsx` + `src/lib/prazos.ts` (validação CNJ e calculadora de prazo).
+  - `src/components/agenda/calendario-mensal.tsx`: visão mensal da agenda, com os prazos fatais.
+  - `src/components/documentos/gerar-documentos-modal.tsx` + `src/lib/documentos.ts`: modelos, edição e impressão.
+  - `src/app/painel/dashboard` + `src/lib/indicadores.ts`.
+  - O menu (`sidebar.tsx`) é organizado em `SECOES`.
 - `src/lib/datas.ts`: utilitários de data local (`chaveDia`, conversão de `datetime-local`). `src/components/toast.tsx`: aviso de sucesso.
 - A rota `/` redireciona para `/painel`.
 

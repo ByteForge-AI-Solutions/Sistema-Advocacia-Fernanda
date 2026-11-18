@@ -1,158 +1,281 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { MessageCircle, RefreshCw, UserRoundCheck } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CircleAlert, LoaderCircle, MessagesSquare, RefreshCw } from "lucide-react";
+import { JanelaChat, type AcaoConversa } from "@/components/atendimentos/janela-chat";
+import { ListaConversas } from "@/components/atendimentos/lista-conversas";
+import { PainelCliente } from "@/components/atendimentos/painel-cliente";
+import { TransferirModal } from "@/components/atendimentos/transferir-modal";
 import { useAuth } from "@/components/auth-provider";
+import { Toast } from "@/components/toast";
+import {
+  ErroInbox,
+  assumirAmpliado,
+  carregarConversa,
+  carregarEquipe,
+  conversaComBot,
+  criarNota,
+  devolverAoBot,
+  encerrar,
+  listarAtendimentos,
+  responder,
+  transferir,
+  type Atendimento,
+  type Conversa,
+  type MembroDestino,
+} from "@/lib/atendimentos";
 import { supabase } from "@/lib/supabase/client";
 
-interface Atendimento {
-  telefone: string;
-  nome_cliente: string | null;
-  area: string | null;
-  status: string;
-  etapa: string;
-  resumo_fatos: string;
-  prioridade: string;
-  ficha_id: string | null;
-  ultima_msg_cliente_em: string | null;
-}
-interface Mensagem {
-  id: number;
-  direcao: "IN" | "OUT";
-  conteudo: string;
-  tipo: string;
-  criado_em: string;
-}
-
-/** Apenas atendimentos atribuídos ao advogado autenticado são visíveis:
- * o RLS do Supabase verifica pode_acessar_ficha(advogado_id). */
+/**
+ * Inbox de atendimento (bot + humano) em 3 colunas.
+ * Visibilidade: RLS com pode_acessar_ficha(advogado_id) — e, para conversas sem
+ * responsável, apenas titulares da área (migração v3). Atualização em tempo real via
+ * Supabase Realtime, com recarga periódica de segurança.
+ */
 export default function ConversasBotPage() {
   const { perfil } = useAuth();
   const [itens, setItens] = useState<Atendimento[]>([]);
+  const [v3, setV3] = useState(true);
+  const [carregando, setCarregando] = useState(true);
+  const [erroLista, setErroLista] = useState<string | null>(null);
   const [selecionado, setSelecionado] = useState<string | null>(null);
-  const [mensagens, setMensagens] = useState<Mensagem[]>([]);
-  const [erro, setErro] = useState("");
-  const [carregando, setCarregando] = useState(false);
-  const [assumindo, setAssumindo] = useState(false);
-
-  const atualizar = useCallback(async () => {
-    if (!perfil) return;
-    setCarregando(true);
-    const { data, error } = await supabase.from("dfu_atendimentos")
-      .select("telefone,nome_cliente,area,status,etapa,resumo_fatos,prioridade,ficha_id,ultima_msg_cliente_em")
-      .order("ultima_msg_cliente_em", { ascending: false })
-      .limit(100);
-    setCarregando(false);
-    if (error) { setErro("Não foi possível consultar as conversas. Verifique se a migração SQL foi aplicada."); return; }
-    setErro("");
-    setItens((data ?? []) as Atendimento[]);
-  }, [perfil]);
-
-  const carregarMensagens = useCallback(async (telefone: string) => {
-    const { data, error } = await supabase.from("dfu_mensagens")
-      .select("id,direcao,conteudo,tipo,criado_em")
-      .eq("telefone", telefone)
-      .order("id", { ascending: false }).limit(60);
-    if (error) { setErro("Não foi possível consultar o histórico deste atendimento."); return; }
-    setMensagens(((data ?? []) as Mensagem[]).reverse());
-  }, []);
-
+  const [conversa, setConversa] = useState<Conversa | null>(null);
+  const [equipe, setEquipe] = useState<MembroDestino[]>([]);
+  const [ocupado, setOcupado] = useState(false);
+  const [erroAcao, setErroAcao] = useState<string | null>(null);
+  const [sucesso, setSucesso] = useState<string | null>(null);
+  const [transferindo, setTransferindo] = useState(false);
+  const [painelAberto, setPainelAberto] = useState(false);
+  const fecharToast = useCallback(() => setSucesso(null), []);
+  // Telefone selecionado no momento em que uma resposta assíncrona chega (evita mostrar conversa trocada).
+  const selecionadoRef = useRef<string | null>(null);
   useEffect(() => {
-    void atualizar();
-    const interval = setInterval(() => void atualizar(), 20000);
-    return () => clearInterval(interval);
-  }, [atualizar]);
+    selecionadoRef.current = selecionado;
+  }, [selecionado]);
 
+  const recarregarLista = useCallback(
+    () =>
+      listarAtendimentos().then(
+        (r) => {
+          setItens(r.itens);
+          setV3(r.v3);
+          setErroLista(null);
+          setCarregando(false);
+        },
+        (e: unknown) => {
+          setErroLista(e instanceof ErroInbox ? e.message : "Não foi possível consultar os atendimentos.");
+          setCarregando(false);
+        },
+      ),
+    [],
+  );
+
+  const recarregarConversa = useCallback(
+    (telefone: string) =>
+      carregarConversa(telefone).then(
+        (c) => {
+          if (selecionadoRef.current === telefone) setConversa(c);
+        },
+        (e: unknown) => {
+          if (selecionadoRef.current === telefone) setErroAcao(e instanceof Error ? e.message : "Erro ao carregar a conversa.");
+        },
+      ),
+    [],
+  );
+
+  // Lista + equipe + Realtime de atendimentos; recarga de segurança a cada 60 s.
+  useEffect(() => {
+    if (!perfil) return;
+    let ativo = true;
+    void recarregarLista();
+    carregarEquipe().then((e) => ativo && setEquipe(e));
+    const canal = supabase
+      .channel("crm-inbox-lista")
+      .on("postgres_changes", { event: "*", schema: "public", table: "dfu_atendimentos" }, () => void recarregarLista())
+      .subscribe();
+    const intervalo = setInterval(() => void recarregarLista(), 60_000);
+    return () => {
+      ativo = false;
+      clearInterval(intervalo);
+      void supabase.removeChannel(canal);
+    };
+  }, [perfil, recarregarLista]);
+
+  // Conversa selecionada: mensagens, notas e fila de saída em tempo real.
   useEffect(() => {
     if (!selecionado) return;
-    void carregarMensagens(selecionado);
-    const interval = setInterval(() => void carregarMensagens(selecionado), 15000);
-    return () => clearInterval(interval);
-  }, [selecionado, carregarMensagens]);
+    const filtro = `telefone=eq.${selecionado}`;
+    const recarga = () => void recarregarConversa(selecionado);
+    recarga();
+    const canal = supabase
+      .channel(`crm-inbox-${selecionado}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "dfu_mensagens", filter: filtro }, recarga)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "dfu_notas_internas", filter: filtro }, recarga)
+      .on("postgres_changes", { event: "*", schema: "public", table: "dfu_outbox", filter: filtro }, recarga)
+      .subscribe();
+    const intervalo = setInterval(recarga, 30_000);
+    return () => {
+      clearInterval(intervalo);
+      void supabase.removeChannel(canal);
+    };
+  }, [selecionado, recarregarConversa]);
 
-  async function assumir() {
-    if (!selecionado || assumindo) return;
-    setAssumindo(true);
-    const { data, error } = await supabase.rpc("dfu_assumir_atendimento", { p_telefone: selecionado });
-    setAssumindo(false);
-    if (error || data !== true) {
-      setErro("Não foi possível assumir o atendimento. Confira suas permissões e o estado do caso.");
-      return;
-    }
-    await atualizar();
+  const nomes = useMemo(() => new Map(equipe.map((m) => [m.id, m.nome])), [equipe]);
+  const atual = itens.find((a) => a.telefone === selecionado) ?? null;
+
+  function selecionar(telefone: string) {
+    setErroAcao(null);
+    setConversa(null);
+    setPainelAberto(false);
+    setSelecionado(telefone);
   }
 
-  const atual = itens.find((item) => item.telefone === selecionado);
+  async function executar(acao: () => Promise<void>, mensagemOk: string): Promise<boolean> {
+    setOcupado(true);
+    setErroAcao(null);
+    try {
+      await acao();
+      setSucesso(mensagemOk);
+      await recarregarLista();
+      if (selecionado) await recarregarConversa(selecionado);
+      return true;
+    } catch (e) {
+      setErroAcao(e instanceof Error ? e.message : "Não foi possível concluir a ação.");
+      return false;
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  async function assumir(a: Atendimento) {
+    // Caso padrão (atribuído e com o bot ativo): RPC original do bot, dfu_assumir_atendimento.
+    // Sem responsável, encerrado ou agendado: RPC ampliada da migração v3.
+    if (a.advogado_id && conversaComBot(a.status)) {
+      const { data, error } = await supabase.rpc("dfu_assumir_atendimento", { p_telefone: a.telefone });
+      if (error || data !== true) throw new Error("Não foi possível assumir o atendimento. Confira suas permissões e o estado do caso.");
+      return;
+    }
+    await assumirAmpliado(a.telefone);
+  }
+
+  function aoAcionar(acao: AcaoConversa) {
+    if (!atual) return;
+    if (acao === "transferir") {
+      setTransferindo(true);
+      return;
+    }
+    if (acao === "assumir") void executar(() => assumir(atual), "Atendimento assumido. O bot está pausado nesta conversa.");
+    if (acao === "devolver" && confirm("Devolver ao bot? Ele volta a responder na próxima mensagem do cliente.")) {
+      void executar(() => devolverAoBot(atual.telefone), "Atendimento devolvido ao bot.");
+    }
+    if (acao === "encerrar" && confirm("Encerrar este atendimento? Mensagens automáticas pendentes serão canceladas.")) {
+      void executar(() => encerrar(atual.telefone), "Atendimento encerrado.");
+    }
+  }
+
+  async function aoEnviar(texto: string, modo: "resposta" | "nota"): Promise<boolean> {
+    if (!atual || !perfil) return false;
+    return modo === "nota"
+      ? executar(() => criarNota(atual.telefone, perfil.id, texto), "Nota interna salva.")
+      : executar(() => responder(atual.telefone, texto), "Resposta enviada para a fila do WhatsApp.");
+  }
+
+  if (!perfil) return null;
 
   return (
-    <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
-      <div className="mb-7 flex flex-wrap items-center justify-between gap-3">
+    <main className="flex h-[calc(100dvh-6.5rem)] min-h-[520px] flex-col lg:h-dvh">
+      <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3">
         <div>
-          <h1 className="text-2xl font-semibold text-navy-950">Conversas do assistente</h1>
-          <p className="mt-1 text-sm text-slate-500">Atendimentos de WhatsApp vinculados às suas fichas. Atualização automática.</p>
+          <h1 className="text-lg font-semibold text-navy-950">Atendimentos</h1>
+          <p className="text-xs text-slate-500">WhatsApp: bot e equipe na mesma caixa de entrada, em tempo real.</p>
         </div>
-        <button type="button" onClick={() => void atualizar()} disabled={carregando}
-          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 disabled:opacity-50">
-          <RefreshCw size={16} /> Atualizar
+        <button
+          type="button"
+          onClick={() => {
+            setCarregando(true);
+            void recarregarLista();
+          }}
+          disabled={carregando}
+          aria-label="Atualizar lista"
+          className="rounded-lg p-2 text-slate-500 ring-1 ring-inset ring-slate-200 hover:bg-slate-50 disabled:opacity-50"
+        >
+          <RefreshCw className={`size-4 ${carregando ? "animate-spin" : ""}`} aria-hidden />
         </button>
       </div>
-      {erro && <p role="alert" className="mb-5 rounded-lg bg-red-50 p-3 text-sm text-red-800">{erro}</p>}
-      <div className="grid min-h-[550px] gap-5 lg:grid-cols-[340px_1fr]">
-        <section aria-label="Atendimentos" className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-          {itens.length === 0 && <p className="p-5 text-sm text-slate-500">Nenhuma conversa atribuída ainda.</p>}
-          <div className="max-h-[680px] overflow-y-auto">
-            {itens.map((item) => (
-              <button key={item.telefone} type="button" onClick={() => setSelecionado(item.telefone)}
-                className={`block w-full border-b border-slate-100 p-4 text-left hover:bg-slate-50 ${selecionado===item.telefone?"bg-blue-50":""}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate font-medium text-slate-900">{item.nome_cliente || "Cliente não identificado"}</span>
-                  <span className="shrink-0 text-xs text-slate-500">{item.prioridade}</span>
-                </div>
-                <p className="mt-1 text-xs text-slate-500">{item.telefone} · {item.area || "a classificar"}</p>
-                <p className="mt-1 text-xs text-slate-600">{item.status.replaceAll("_", " ")}</p>
-              </button>
-            ))}
+
+      {!v3 && (
+        <p className="border-b border-amber-200 bg-amber-50 px-5 py-2 text-xs text-amber-900">
+          Modo leitura: respostas humanas, notas, etiquetas e conversas sem responsável exigem a migração
+          20261118_v3_crm_modulos.sql no Supabase.
+        </p>
+      )}
+
+      {erroLista ? (
+        <div role="alert" className="m-5 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-5 text-sm text-red-800">
+          <CircleAlert className="mt-0.5 size-5 shrink-0" aria-hidden />
+          {erroLista}
+        </div>
+      ) : carregando && itens.length === 0 ? (
+        <div className="flex flex-1 items-center justify-center" role="status">
+          <LoaderCircle className="size-6 animate-spin text-navy-700" aria-hidden />
+          <span className="sr-only">Carregando…</span>
+        </div>
+      ) : (
+        <div className="grid min-h-0 flex-1 lg:grid-cols-[320px_1fr] xl:grid-cols-[320px_1fr_320px]">
+          <div className={`min-h-0 ${selecionado ? "hidden lg:flex" : "flex"} flex-col`}>
+            <ListaConversas itens={itens} meuId={perfil.id} selecionado={selecionado} onSelecionar={selecionar} />
           </div>
-        </section>
-        <section aria-label="Histórico da conversa" className="flex flex-col rounded-xl border border-slate-200 bg-white">
-          {!atual ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-slate-500">
-              <MessageCircle size={32} /> Selecione um atendimento para ver o histórico e a triagem.
-            </div>
-          ) : (
+
+          {atual ? (
             <>
-              <header className="border-b border-slate-100 p-5">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h2 className="font-semibold text-slate-900">{atual.nome_cliente || "Cliente"}</h2>
-                    <p className="text-xs text-slate-500">{atual.area || "Sem área"} · {atual.status}</p>
-                  </div>
-                  {!["agendado","humano","encerrado","descadastrado"].includes(atual.status) && (
-                    <button type="button" disabled={assumindo} onClick={() => void assumir()}
-                      className="inline-flex items-center gap-2 rounded-lg bg-navy-900 px-3 py-2 text-sm text-white disabled:opacity-50">
-                      <UserRoundCheck size={16} /> Assumir atendimento
-                    </button>
-                  )}
-                </div>
-                <div className="mt-4 whitespace-pre-line rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
-                  <span className="font-semibold">Resumo interno: </span>{atual.resumo_fatos || "Aguardando triagem."}
-                </div>
-              </header>
-              <div className="max-h-[510px] flex-1 space-y-3 overflow-y-auto bg-slate-50 p-5">
-                {mensagens.map((m) => <div key={m.id}
-                    className={`max-w-[90%] rounded-xl p-3 text-sm shadow-sm ${m.direcao==="OUT"?"ml-auto bg-blue-100 text-slate-900":"mr-auto bg-white text-slate-800"}`}>
-                  <p className="mb-1 text-xs font-semibold">{m.direcao === "OUT" ? "Assistente" : "Cliente"}</p>
-                  <p className="whitespace-pre-wrap break-words">{m.conteudo}</p>
-                  <p className="mt-2 text-right text-[11px] opacity-60">{new Date(m.criado_em).toLocaleString("pt-BR")}</p>
-                </div>)}
+              <div className="flex min-h-0">
+                <JanelaChat
+                  atendimento={atual}
+                  conversa={conversa}
+                  nomes={nomes}
+                  meuId={perfil.id}
+                  ocupado={ocupado}
+                  erro={erroAcao}
+                  onAcao={aoAcionar}
+                  onEnviar={aoEnviar}
+                  onVoltar={() => setSelecionado(null)}
+                  onAbrirPainel={() => setPainelAberto(true)}
+                />
               </div>
-              <footer className="border-t border-slate-100 p-3 text-xs text-slate-500">
-                Esta tela acompanha o bot, mas não envia mensagens. Para contato humano, use o canal oficial do escritório.
-              </footer>
+              <div
+                className={`${painelAberto ? "fixed inset-y-0 right-0 z-30 flex w-[min(360px,100%)] shadow-2xl" : "hidden"} min-h-0 flex-col xl:static xl:flex xl:w-auto xl:shadow-none`}
+              >
+                <PainelCliente
+                  key={atual.telefone}
+                  atendimento={atual}
+                  nomeResponsavel={atual.advogado_id ? (nomes.get(atual.advogado_id) ?? null) : null}
+                  podeEditar={v3}
+                  onEtiquetasSalvas={(etiquetas) =>
+                    setItens((lista) => lista.map((a) => (a.telefone === atual.telefone ? { ...a, etiquetas } : a)))
+                  }
+                  onFechar={() => setPainelAberto(false)}
+                />
+              </div>
             </>
+          ) : (
+            <div className="hidden flex-1 flex-col items-center justify-center gap-3 bg-slate-50 p-8 text-center text-sm text-slate-500 lg:flex xl:col-span-2">
+              <MessagesSquare className="size-10 text-slate-300" aria-hidden />
+              Selecione uma conversa para ver o histórico, responder ou registrar notas internas.
+            </div>
           )}
-        </section>
-      </div>
+        </div>
+      )}
+
+      {transferindo && atual && (
+        <TransferirModal
+          equipe={equipe}
+          meuId={perfil.id}
+          atualId={atual.advogado_id}
+          onConfirmar={(destino) => executar(() => transferir(atual.telefone, destino), "Atendimento transferido.")}
+          onFechar={() => setTransferindo(false)}
+        />
+      )}
+      {sucesso && <Toast mensagem={sucesso} onFechar={fecharToast} />}
     </main>
   );
 }
