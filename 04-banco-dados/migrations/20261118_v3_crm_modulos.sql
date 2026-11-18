@@ -35,6 +35,15 @@ BEGIN
                    AND tgname = 'dfu_prevenir_sobreposicao_agenda' AND NOT tgisinternal) THEN
     RAISE EXCEPTION 'Trigger dfu_prevenir_sobreposicao_agenda ausente: aplique 20261118_bot_unificado.sql antes.';
   END IF;
+  -- Colunas de data usadas por crm_indicadores. O banco real diverge do schema.sql:
+  -- agenda_advogados usa criado_em (não created_at); fichas_clientes usa created_at.
+  FOREACH v IN ARRAY ARRAY['agenda_advogados.criado_em','fichas_clientes.created_at','dfu_atendimentos.criado_em'] LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_attribute
+                   WHERE attrelid = to_regclass('public.'||split_part(v, '.', 1))
+                     AND attname = split_part(v, '.', 2) AND attnum > 0 AND NOT attisdropped) THEN
+      RAISE EXCEPTION 'Coluna ausente: public.%. Confira a estrutura real antes de aplicar.', v;
+    END IF;
+  END LOOP;
 END $crm3_preflight$;
 
 
@@ -663,7 +672,7 @@ BEGIN
                 ELSE public.pode_acessar_ficha(f.advogado_id) END
   ), agd AS (
     SELECT g.id, g.status, g.advogado_id FROM public.agenda_advogados g
-     WHERE g.created_at >= p_inicio AND g.created_at < p_fim AND g.status <> 'cancelado'
+     WHERE g.criado_em >= p_inicio AND g.criado_em < p_fim AND g.status <> 'cancelado'
        AND CASE WHEN v_escritorio THEN g.advogado_id NOT IN (SELECT id FROM devs)
                 ELSE public.pode_acessar_ficha(g.advogado_id) END
   ), prz AS (

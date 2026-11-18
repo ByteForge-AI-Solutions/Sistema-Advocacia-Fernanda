@@ -77,7 +77,7 @@ Compromissos e reuniões dos advogados (seção 6 do `schema.sql`).
 | `data_hora_inicio` | TIMESTAMPTZ NOT NULL | |
 | `data_hora_fim` | TIMESTAMPTZ | Opcional; se preenchido, precisa ser depois do início |
 | `status` | TEXT NOT NULL | CHECK: `'agendado'` (padrão), `'confirmado'`, `'realizado'` ou `'cancelado'` |
-| `created_at` | TIMESTAMPTZ | |
+| `criado_em` | TIMESTAMPTZ | **No banco real é `criado_em`**, conferido em 18/11/2026. O `schema.sql` diz `created_at`, mas essa coluna não existe (dá `42703`). Já `fichas_clientes` e `advogados` usam `created_at`. |
 
 Ao contrário das tabelas antigas, esta tem CHECKs no banco. O RLS usa a mesma `pode_acessar_ficha(advogado_id)`, mas aqui SELECT, INSERT, UPDATE e DELETE são liberados para a equipe responsável: o titular cuida dos próprios compromissos e dos seus estagiários, e o estagiário só dos dele. A chave `anon` não tem acesso.
 
