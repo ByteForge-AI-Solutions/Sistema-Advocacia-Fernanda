@@ -6,6 +6,14 @@ import { useAuth } from "@/components/auth-provider";
 import { AREAS_JURIDICAS, isAreaJuridica } from "@/lib/advogados";
 import { rotuloStatusConversa } from "@/lib/atendimentos";
 import { PRESETS, buscarIndicadores, intervaloDoPreset, type Indicadores, type PresetPeriodo } from "@/lib/indicadores";
+import {
+  ETAPAS,
+  ETAPA_INFO,
+  MOTIVO_PERDA_LABEL,
+  buscarIndicadoresFunil,
+  isMotivoPerda,
+  type IndicadoresFunil,
+} from "@/lib/funil";
 
 const fmtNum = new Intl.NumberFormat("pt-BR");
 const fmtPct = new Intl.NumberFormat("pt-BR", { style: "percent", maximumFractionDigits: 1 });
@@ -63,16 +71,18 @@ export default function DashboardPage() {
   const [dados, setDados] = useState<Indicadores | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(true);
+  const [funil, setFunil] = useState<IndicadoresFunil | null>(null);
 
   const intervalo = useMemo(() => intervaloDoPreset(preset), [preset]);
 
   useEffect(() => {
     if (!perfil) return;
     let atual = true;
-    buscarIndicadores(intervalo.inicio, intervalo.fim).then(
-      (d) => {
+    Promise.all([buscarIndicadores(intervalo.inicio, intervalo.fim), buscarIndicadoresFunil(intervalo.inicio, intervalo.fim)]).then(
+      ([d, f]) => {
         if (!atual) return;
         setDados(d);
+        setFunil(f);
         setErro(null);
         setCarregando(false);
       },
@@ -104,6 +114,19 @@ export default function DashboardPage() {
     .map(([status, n]) => ({ nome: rotuloStatusConversa(status), valor: n }))
     .sort((a, b) => b.valor - a.valor);
   const maxFichasAdv = Math.max(1, ...(dados?.por_advogado ?? []).map((a) => a.fichas));
+  // Etapas na ordem do funil (categoria ordinal: não reordenar por valor).
+  const porEtapa = funil
+    ? ETAPAS.map((e) => ({
+        nome: ETAPA_INFO[e].numero ? `${ETAPA_INFO[e].numero}. ${ETAPA_INFO[e].label}` : ETAPA_INFO[e].label,
+        valor: funil.por_etapa[e] ?? 0,
+      })).filter((i) => i.valor > 0)
+    : [];
+  const perdas = funil
+    ? Object.entries(funil.perdas_por_motivo)
+        .map(([m, n]) => ({ nome: isMotivoPerda(m) ? MOTIVO_PERDA_LABEL[m] : m, valor: n }))
+        .sort((a, b) => b.valor - a.valor)
+    : [];
+  const totalPerdas = perdas.reduce((t, p) => t + p.valor, 0);
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
@@ -200,6 +223,37 @@ export default function DashboardPage() {
               </div>
             </section>
           </div>
+
+          {funil && (
+            <div className="mt-6 grid gap-6 lg:grid-cols-2">
+              <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+                <h2 className="text-sm font-semibold text-slate-900">Funil: etapa atual dos leads</h2>
+                <p className="mt-0.5 text-xs text-slate-500">Fichas criadas no período, pela etapa em que estão hoje (na ordem do funil).</p>
+                <div className="mt-5">
+                  {porEtapa.length === 0 ? (
+                    <p className="text-sm text-slate-400">Sem fichas no período.</p>
+                  ) : (
+                    <BarrasOrdenadas itens={porEtapa} unidade="leads" />
+                  )}
+                </div>
+              </section>
+              <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+                <h2 className="text-sm font-semibold text-slate-900">Motivos de perda</h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {totalPerdas > 0
+                    ? `${fmtNum.format(totalPerdas)} lead(s) perdido(s) no período. Mostra onde o anúncio ou a abordagem precisa mudar.`
+                    : "Leads marcados como perdidos no período."}
+                </p>
+                <div className="mt-5">
+                  {perdas.length === 0 ? (
+                    <p className="text-sm text-slate-400">Nenhuma perda registrada no período.</p>
+                  ) : (
+                    <BarrasOrdenadas itens={perdas} unidade="perdas" />
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
 
           <section className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-sm font-semibold text-slate-900">Volume por advogado</h2>

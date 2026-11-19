@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Gavel } from "lucide-react";
+import { ChevronLeft, ChevronRight, Gavel, MessageCircleReply } from "lucide-react";
 import { AREAS_JURIDICAS, isAreaJuridica } from "@/lib/advogados";
 import { eventoCancelado, type EventoAgenda } from "@/lib/agenda";
 import { chaveDia, fmtHora } from "@/lib/datas";
@@ -22,9 +22,23 @@ export function limitesDoMes(mes: Date) {
   return { de: chaveDia(primeiroDiaDoMes(mes)), ate: chaveDia(new Date(mes.getFullYear(), mes.getMonth() + 1, 0)) };
 }
 
+/** Próximo toque de follow-up de um lead (migração v6), calculado pela página. */
+export interface ToqueAgenda {
+  fichaId: string;
+  cliente: string;
+  advogadoId: string | null;
+  devidoEm: Date;
+  dia: number;
+  titulo: string;
+  vencido: boolean;
+}
+
 type ItemDia =
   | { tipo: "prazo"; chave: string; prazo: PrazoProcessual }
+  | { tipo: "toque"; chave: string; toque: ToqueAgenda }
   | { tipo: "evento"; chave: string; evento: EventoAgenda };
+
+const ORDEM_ITEM: Record<ItemDia["tipo"], number> = { prazo: 0, toque: 1, evento: 2 };
 
 function rotuloArea(area: string) {
   return isAreaJuridica(area) ? AREAS_JURIDICAS[area] : area;
@@ -36,13 +50,35 @@ compacto,
 agora,
 onAbrirEvento,
 onAbrirPrazo,
+onAbrirToque,
 }: {
 item: ItemDia;
 compacto: boolean;
 agora: Date;
 onAbrirEvento: (e: EventoAgenda) => void;
 onAbrirPrazo: (p: PrazoProcessual) => void;
+onAbrirToque?: (t: ToqueAgenda) => void;
 }) {
+  if (item.tipo === "toque") {
+    const t = item.toque;
+    return (
+      <button
+        type="button"
+        onClick={() => onAbrirToque?.(t)}
+        title={`Follow-up dia ${t.dia}: ${t.titulo} — ${t.cliente}`}
+        className={`flex w-full items-center gap-1 rounded px-1.5 py-0.5 text-left text-[11px] transition ${
+          t.vencido ? "bg-amber-500 font-semibold text-white hover:bg-amber-600" : "bg-amber-50 text-amber-900 ring-1 ring-inset ring-amber-200 hover:bg-amber-100"
+        }`}
+      >
+        <MessageCircleReply className="size-3 shrink-0" aria-hidden />
+        <span className="truncate">
+          {compacto ? "Toque: " : `Follow-up dia ${t.dia}: `}
+          {t.cliente.split(" ")[0]}
+          {!compacto ? ` · ${t.titulo}` : ""}
+        </span>
+      </button>
+    );
+  }
   if (item.tipo === "prazo") {
     const p = item.prazo;
     const u = urgenciaDoPrazo(p, agora);
@@ -99,10 +135,15 @@ export function CalendarioMensal({
   onMudarMes,
   onAbrirEvento,
   onAbrirPrazo,
+  toques = [],
+  onAbrirToque,
 }: {
   mes: Date;
   eventos: EventoAgenda[];
   prazos: PrazoProcessual[];
+  /** Toques de follow-up (opcional). */
+  toques?: ToqueAgenda[];
+  onAbrirToque?: (t: ToqueAgenda) => void;
   feriados: Set<string>;
   agora: Date;
   onMudarMes: (mes: Date) => void;
@@ -116,9 +157,15 @@ export function CalendarioMensal({
     const add = (k: string, item: ItemDia) => mapa.set(k, [...(mapa.get(k) ?? []), item]);
     for (const p of prazos) add(p.data_fatal.slice(0, 10), { tipo: "prazo", chave: `p${p.id}`, prazo: p });
     for (const e of eventos) add(chaveDia(new Date(e.data_hora_inicio)), { tipo: "evento", chave: `e${e.id}`, evento: e });
+    // Toque atrasado aparece no dia de hoje (não some no passado).
+    const hojeChave = chaveDia(agora);
+    for (const t of toques) {
+      const k = t.vencido ? hojeChave : chaveDia(t.devidoEm);
+      add(k, { tipo: "toque", chave: `t${t.fichaId}`, toque: t });
+    }
     for (const lista of mapa.values()) {
       lista.sort((a, b) => {
-        if (a.tipo !== b.tipo) return a.tipo === "prazo" ? -1 : 1;
+        if (a.tipo !== b.tipo) return ORDEM_ITEM[a.tipo] - ORDEM_ITEM[b.tipo];
         if (a.tipo === "evento" && b.tipo === "evento") {
           return new Date(a.evento.data_hora_inicio).getTime() - new Date(b.evento.data_hora_inicio).getTime();
         }
@@ -126,7 +173,7 @@ export function CalendarioMensal({
       });
     }
     return mapa;
-  }, [eventos, prazos]);
+  }, [eventos, prazos, toques, agora]);
 
   const celulas = useMemo(() => {
     const inicio = primeiroDiaDoMes(mes);
@@ -210,7 +257,7 @@ export function CalendarioMensal({
                 </button>
                 <div className="space-y-0.5">
                   {itens.slice(0, MAX_POR_DIA).map((it) => (
-                    <ItemCalendario key={it.chave} item={it} compacto agora={agora} onAbrirEvento={onAbrirEvento} onAbrirPrazo={onAbrirPrazo} />
+                    <ItemCalendario key={it.chave} item={it} compacto agora={agora} onAbrirEvento={onAbrirEvento} onAbrirPrazo={onAbrirPrazo} onAbrirToque={onAbrirToque} />
                   ))}
                   {itens.length > MAX_POR_DIA && (
                     <button
@@ -233,6 +280,9 @@ export function CalendarioMensal({
         <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded bg-red-50 ring-1 ring-red-200" /> Prazo fatal</span>
         <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded bg-white ring-1 ring-red-300" /> Reunião prioridade alta</span>
         <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded bg-navy-50" /> Reunião</span>
+        {toques.length > 0 && (
+          <span className="inline-flex items-center gap-1.5"><span className="size-3 rounded bg-amber-50 ring-1 ring-amber-200" /> Toque de follow-up (atrasado em laranja forte, no dia de hoje)</span>
+        )}
       </div>
 
       {diaAberto && (
@@ -243,7 +293,7 @@ export function CalendarioMensal({
           ) : (
             <div className="mt-3 space-y-1.5">
               {itensAbertos.map((it) => (
-                <ItemCalendario key={it.chave} item={it} compacto={false} agora={agora} onAbrirEvento={onAbrirEvento} onAbrirPrazo={onAbrirPrazo} />
+                <ItemCalendario key={it.chave} item={it} compacto={false} agora={agora} onAbrirEvento={onAbrirEvento} onAbrirPrazo={onAbrirPrazo} onAbrirToque={onAbrirToque} />
               ))}
             </div>
           )}

@@ -5,6 +5,18 @@ import { Calculator, CircleAlert, Flame, LoaderCircle, ShieldCheck, X } from "lu
 import { STATUS_ATENDIMENTO, STATUS_LABEL, type Ficha, type StatusAtendimento } from "@/lib/fichas";
 import { deInputLocal, paraInputLocal, proximaHoraCheia } from "@/lib/datas";
 import {
+  CADENCIAS,
+  ETAPAS,
+  ETAPA_INFO,
+  MOTIVOS_PERDA,
+  MOTIVO_PERDA_LABEL,
+  dataDoPasso,
+  etapaAtiva,
+  textoProximaAcao,
+  type EtapaFunil,
+  type MotivoPerda,
+} from "@/lib/funil";
+import {
   AVISO_DOCUMENTO,
   AVISO_SIMULACAO,
   DORES,
@@ -33,6 +45,10 @@ const SUGESTOES = ["Enviar 1ª mensagem", "Retomar conversa", "Ligação de 10 m
 
 interface FormLead {
   status: StatusAtendimento;
+  etapa: EtapaFunil;
+  motivo_perda: MotivoPerda | "";
+  motivo_perda_detalhe: string;
+  nao_contatar: boolean;
   proxima_acao: string;
   proxima_acao_em: string;
   faixa_divida: FaixaDivida | "";
@@ -58,6 +74,10 @@ export function EditarLeadModal({
   const ref = useRef<HTMLDialogElement>(null);
   const [form, setForm] = useState<FormLead>(() => ({
     status: ficha.status ?? "novo",
+    etapa: ficha.funil.etapa,
+    motivo_perda: ficha.funil.motivo_perda ?? "",
+    motivo_perda_detalhe: ficha.funil.motivo_perda_detalhe ?? "",
+    nao_contatar: ficha.funil.nao_contatar,
     proxima_acao: ficha.lead.proxima_acao ?? "",
     proxima_acao_em: ficha.lead.proxima_acao_em ? paraInputLocal(ficha.lead.proxima_acao_em) : "",
     faixa_divida: ficha.lead.faixa_divida ?? "",
@@ -79,7 +99,11 @@ export function EditarLeadModal({
   }, []);
 
   const definir = <K extends keyof FormLead>(k: K, v: FormLead[K]) => setForm((f) => ({ ...f, [k]: v }));
-  const ativo = form.status !== "finalizado";
+  // Com a v6, a etapa manda (encerrado/perdido = fim); sem ela, o status antigo.
+  const funil = ficha.funil.disponivel;
+  const ativo = funil ? etapaAtiva(form.etapa) : form.status !== "finalizado";
+  const perdido = funil && form.etapa === "perdido";
+
 
   const temperatura = useMemo(
     () =>
@@ -91,6 +115,21 @@ export function EditarLeadModal({
       }),
     [form.faixa_divida, form.bloqueio_penhora, form.dor_principal, form.onde_divida],
   );
+
+  /** Ao trocar de etapa, sugere o primeiro toque da cadência como próxima ação (se a ação estiver vazia ou for automática). */
+  function escolherEtapa(e: EtapaFunil) {
+    setForm((f) => {
+      const primeiro = CADENCIAS[e]?.[0];
+      const automatica = !f.proxima_acao.trim() || f.proxima_acao.startsWith("Follow-up dia ");
+      if (!primeiro || !automatica) return { ...f, etapa: e };
+      return {
+        ...f,
+        etapa: e,
+        proxima_acao: textoProximaAcao(e, primeiro),
+        proxima_acao_em: paraInputLocal(dataDoPasso(new Date(), primeiro.dia, temperatura === "urgente")),
+      };
+    });
+  }
 
   const simulacao = useMemo(
     () => simularExemplo(Number(simValor.replace(/\./g, "").replace(",", ".")), Number(simDesconto.replace(",", ".")), Number(simParcelas)),
@@ -110,13 +149,22 @@ export function EditarLeadModal({
     if (ativo && !quando) problemas.push("Informe a data e a hora da próxima ação.");
     if (texto.length > 280) problemas.push("A próxima ação deve ter até 280 caracteres.");
     if (texto && contemDocumentoPessoal(texto)) problemas.push(AVISO_DOCUMENTO);
+    if (perdido && !form.motivo_perda) problemas.push("Informe o motivo de perda: é ele que mostra onde o anúncio ou a abordagem precisa mudar.");
+    if (perdido && contemDocumentoPessoal(form.motivo_perda_detalhe)) problemas.push(AVISO_DOCUMENTO);
     setErros(problemas);
     if (problemas.length) return;
 
     setSalvando(true);
     try {
       await salvarLead(ficha.id, {
-        status_atendimento: form.status,
+        ...(funil
+          ? {
+              etapa_funil: form.etapa,
+              motivo_perda: perdido ? (form.motivo_perda as MotivoPerda) : null,
+              motivo_perda_detalhe: perdido ? form.motivo_perda_detalhe.trim() || null : null,
+              nao_contatar: form.nao_contatar,
+            }
+          : { status_atendimento: form.status }),
         proxima_acao: texto || null,
         proxima_acao_em: quando ? quando.toISOString() : null,
         faixa_divida: form.faixa_divida || null,
@@ -154,14 +202,71 @@ export function EditarLeadModal({
         <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
           {/* Status e próxima ação */}
           <section className="space-y-4">
-            <div>
-              <label htmlFor="lead-status" className={rotulo}>Status do atendimento</label>
-              <select id="lead-status" value={form.status} onChange={(e) => definir("status", e.target.value as StatusAtendimento)} className={campo}>
-                {STATUS_ATENDIMENTO.map((s) => (
-                  <option key={s} value={s}>{STATUS_LABEL[s]}</option>
-                ))}
-              </select>
-            </div>
+            {funil ? (
+              <div>
+                <label htmlFor="lead-etapa" className={rotulo}>Etapa do funil</label>
+                <select id="lead-etapa" value={form.etapa} onChange={(e) => escolherEtapa(e.target.value as EtapaFunil)} className={campo}>
+                  <optgroup label="Etapas ativas">
+                    {ETAPAS.filter((e) => ETAPA_INFO[e].tipo === "ativa").map((e) => (
+                      <option key={e} value={e}>{ETAPA_INFO[e].numero}. {ETAPA_INFO[e].label}</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Saídas">
+                    {ETAPAS.filter((e) => ETAPA_INFO[e].tipo === "saida").map((e) => (
+                      <option key={e} value={e}>{ETAPA_INFO[e].label}</option>
+                    ))}
+                  </optgroup>
+                </select>
+                <p className="mt-1 text-xs text-slate-500">
+                  Entra quando: {ETAPA_INFO[form.etapa].entra.toLowerCase()}. Sai quando: {ETAPA_INFO[form.etapa].sai.toLowerCase()}. Tempo máximo:{" "}
+                  {ETAPA_INFO[form.etapa].tempoMaxLabel}.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <label htmlFor="lead-status" className={rotulo}>Status do atendimento</label>
+                <select id="lead-status" value={form.status} onChange={(e) => definir("status", e.target.value as StatusAtendimento)} className={campo}>
+                  {STATUS_ATENDIMENTO.map((s) => (
+                    <option key={s} value={s}>{STATUS_LABEL[s]}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {perdido && (
+              <div className="grid gap-4 rounded-xl border border-red-200 bg-red-50/60 p-4 sm:grid-cols-2">
+                <div>
+                  <label htmlFor="lead-motivo" className={rotulo}>
+                    Motivo de perda <span className="text-red-600" aria-hidden>*</span>
+                  </label>
+                  <select
+                    id="lead-motivo"
+                    required
+                    aria-required
+                    value={form.motivo_perda}
+                    onChange={(e) => definir("motivo_perda", e.target.value as MotivoPerda | "")}
+                    className={campo}
+                  >
+                    <option value="">Selecione…</option>
+                    {MOTIVOS_PERDA.map((m) => (
+                      <option key={m} value={m}>{MOTIVO_PERDA_LABEL[m]}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="lead-motivo-detalhe" className={rotulo}>Detalhe (opcional)</label>
+                  <input
+                    id="lead-motivo-detalhe"
+                    maxLength={280}
+                    value={form.motivo_perda_detalhe}
+                    onChange={(e) => definir("motivo_perda_detalhe", e.target.value)}
+                    placeholder="Ex.: achou caro o diagnóstico"
+                    className={campo}
+                  />
+                </div>
+                <p className="text-xs text-red-900/80 sm:col-span-2">Pode ser reativado em 90 dias. O motivo alimenta o painel de indicadores.</p>
+              </div>
+            )}
 
             <div className="grid gap-4 sm:grid-cols-[1fr_14rem]">
               <div>
@@ -221,6 +326,21 @@ export function EditarLeadModal({
                 : "Atendimento finalizado: a próxima ação é opcional."}
             </p>
           </section>
+
+          {funil && (
+            <label className="flex items-start gap-2.5 rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-800">
+              <input
+                type="checkbox"
+                checked={form.nao_contatar}
+                onChange={(e) => definir("nao_contatar", e.target.checked)}
+                className="mt-0.5 size-4 rounded border-slate-300 text-red-700 focus:ring-red-500"
+              />
+              <span>
+                <strong>Não contatar</strong> (pedido do cliente para parar)
+                <span className="block text-xs text-slate-500">Tira o lead de todas as sequências de follow-up. O pedido é definitivo.</span>
+              </span>
+            </label>
+          )}
 
           {/* Qualificação → cor */}
           <section className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">

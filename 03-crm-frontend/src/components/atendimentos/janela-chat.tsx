@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import {
   ArrowLeft,
   ArrowRightLeft,
+  BookOpenText,
   Bot,
   CircleAlert,
   CircleCheckBig,
@@ -24,6 +25,9 @@ import {
   type Atendimento,
   type Conversa,
 } from "@/lib/atendimentos";
+import { lerDadosEscritorio } from "@/lib/documentos";
+import { avisosOab, preencherMensagem, variaveisPendentes, type MensagemPronta } from "@/lib/mensagens-prontas";
+import { MensagensProntasPainel } from "@/components/atendimentos/mensagens-prontas-painel";
 
 type ItemLinha =
   | { tipo: "msg"; id: string; quando: string; direcao: "IN" | "OUT"; texto: string; autor: string; humano: boolean }
@@ -59,6 +63,8 @@ export function JanelaChat({
 }) {
   const [modo, setModo] = useState<"resposta" | "nota">("resposta");
   const [texto, setTexto] = useState("");
+  const [biblioteca, setBiblioteca] = useState(false);
+  const [aviso, setAviso] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
   const fimRef = useRef<HTMLDivElement>(null);
 
@@ -106,10 +112,35 @@ export function JanelaChat({
   const janelaAberta = janela24hAberta(atendimento);
   const podeResponder = humano && !optout && janelaAberta;
 
+  /** Coloca a mensagem pronta no campo (variáveis preenchidas); nada sai sem revisão. */
+  function usarMensagem(m: MensagemPronta) {
+    const preenchida = preencherMensagem(m.texto, {
+      nome: atendimento.nome_cliente,
+      advogado: nomes.get(meuId) ?? "",
+      oab: lerDadosEscritorio().advogado_oab,
+    });
+    setTexto((t) => (t.trim() ? `${t.trimEnd()}\n\n${preenchida}` : preenchida));
+    setModo("resposta");
+    setBiblioteca(false);
+    setAviso(null);
+  }
+
   async function enviar() {
     const limpo = texto.trim();
     if (!limpo || enviando) return;
     if (modo === "resposta" && !podeResponder) return;
+    if (modo === "resposta") {
+      // Variáveis sem preencher nunca saem para o cliente.
+      const pendentes = variaveisPendentes(limpo);
+      if (pendentes.length > 0) {
+        setAviso(`Complete antes de enviar: ${pendentes.join(", ")}.`);
+        return;
+      }
+      // Regras da OAB: avisa e pede confirmação (não bloqueia, o advogado decide).
+      const oab = avisosOab(limpo);
+      if (oab.length > 0 && !confirm(`Atenção (OAB):\n\n• ${oab.join("\n• ")}\n\nEnviar mesmo assim?`)) return;
+    }
+    setAviso(null);
     setEnviando(true);
     const ok = await onEnviar(limpo, modo);
     setEnviando(false);
@@ -256,7 +287,23 @@ export function JanelaChat({
           >
             <StickyNote className="size-3.5" aria-hidden /> Nota interna
           </button>
+          <button
+            type="button"
+            onClick={() => setBiblioteca((v) => !v)}
+            aria-expanded={biblioteca}
+            disabled={!podeResponder}
+            title={podeResponder ? "Mensagens prontas (SPIN e objeções)" : "Disponível quando for possível responder"}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 hover:bg-navy-50 disabled:opacity-40"
+          >
+            <BookOpenText className="size-3.5" aria-hidden /> Mensagens prontas
+          </button>
         </div>
+
+        {biblioteca && podeResponder && (
+          <MensagensProntasPainel area={atendimento.area} onEscolher={usarMensagem} onFechar={() => setBiblioteca(false)} />
+        )}
+
+        {aviso && <p role="alert" className="mb-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">{aviso}</p>}
 
         {modo === "resposta" && !podeResponder && (
           <p className="mb-2 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">

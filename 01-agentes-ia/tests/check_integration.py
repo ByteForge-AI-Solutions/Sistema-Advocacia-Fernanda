@@ -100,13 +100,15 @@ assert edge.index('const state = await persist(parsed)') < edge.index('return ne
 # app/painel/page.tsx foram atualizados de propósito; hashes renovados abaixo.
 # v5 (leads e pós-venda, 2026-11-18): fichas.ts ganhou os campos de lead, o fallback sem a
 # migração v5 e a ordenação por cor; hash renovado.
+# v6 (funil e follow-up, 2026-11-18): fichas.ts lê os campos do funil (com fallback sem a v6);
+# hash renovado.
 # O hash é calculado com fim de linha normalizado (CRLF → LF): no Windows o git
 # (core.autocrlf) troca o fim de linha no checkout sem alterar o conteúdo.
 protected={
  '03-crm-frontend/src/lib/advogados.ts':'e4b8f38336364d721fe61468aa5c99cd89443f5d06acfe220be6a5f1d2086f23',
  '03-crm-frontend/src/lib/agenda.ts':'bb402cc76667354b4d8500f7db016b1b2086d01e88fbbdcb0c32cac5eb397a94',
  '03-crm-frontend/src/lib/disponibilidade.ts':'a41dd7d431b7f4bb046a63b8bd70c40a68d781312e1d94ea89632fd710642245',
- '03-crm-frontend/src/lib/fichas.ts':'5390775e0cc3914ba80782d3c6855f4ef866d07c548bd77a3460b20677c77146',
+ '03-crm-frontend/src/lib/fichas.ts':'4c4807ac87e343542bbc8fd8510b3f13011f2c11b1e00e5baf69169cd74d9b63',
  '03-crm-frontend/src/components/auth-provider.tsx':'e231dd519cb9c9f1d3a96dacc7c7e399a1a40566f1228b8c2f9265c68a6fa1e7',
  '03-crm-frontend/src/components/agenda/reuniao-modal.tsx':'0c9980e6663a85b17bed166e97cda43ea675999a814346ac80ffb7e306fedd64',
  '03-crm-frontend/src/app/painel/page.tsx':'fb576cafebf40d7765f00028f8953d5ec41477515b3184205ee112d1d9999182',
@@ -136,6 +138,29 @@ assert 'ALTER COLUMN numero_cnj DROP NOT NULL' in v5 and 'prazos_cnj_obrigatorio
 leads=(CLI/'src/lib/leads.ts').read_text(encoding='utf-8')
 assert 'export function calcularTemperatura' in leads and 'export function contemDocumentoPessoal' in leads
 assert 'insert' not in leads.split('simularExemplo')[1].split('// ---------- gravação')[0], 'simulação nunca é gravada'
+# v6: funil de 12 etapas, motivo de perda obrigatório, toques de follow-up e mensagens prontas.
+v6=(ROOT/'04-banco-dados/migrations/20261118_v6_funil_followup.sql').read_text(encoding='utf-8')
+assert re.search(r'BEGIN\s*;',v6) and v6.count('$$') % 2 == 0 and v6.rstrip().endswith('COMMIT;')
+assert 'DROP TABLE' not in v6.upper()
+assert "CHECK (etapa_funil <> 'perdido' OR motivo_perda IS NOT NULL)" in v6, 'motivo de perda obrigatório no banco'
+assert "IF current_user = 'authenticated' THEN" in v6, 'regra de ouro só para edição direta do CRM'
+assert 'SECURITY INVOKER' in v6.split('crm_followup_registrar(')[1].split('$$')[0], 'registro de toque respeita RLS'
+assert 'public.pode_acessar_ficha(f.advogado_id)' in v6 and 'GRANT SELECT, INSERT ON public.crm_followup_toques' in v6
+for proibido in ('CREATE OR REPLACE FUNCTION public.pode_acessar_ficha', 'CREATE OR REPLACE FUNCTION public.dfu_',
+                 'CREATE OR REPLACE FUNCTION public.crm_indicadores('):
+    assert proibido not in v6, proibido
+funil=(CLI/'src/lib/funil.ts').read_text(encoding='utf-8')
+etapas=re.search(r'export const ETAPAS = \[(.*?)\] as const', funil, re.S).group(1)
+assert len(re.findall(r'"[a-z_]+"', etapas))==12, '12 etapas no funil'
+for e in re.findall(r'"([a-z_]+)"', etapas):
+    assert f"'{e}'" in v6, f'etapa {e} ausente no CHECK do banco'
+# Mensagens prontas: OAB (sem valor, percentual ou promessa de resultado).
+msgs=(CLI/'src/lib/mensagens-prontas.ts').read_text(encoding='utf-8')
+textos=msgs.split('export const MENSAGENS_PRONTAS')[1].split('];')[0]
+assert not re.search(r'R\$|%|garant|com certeza|100\s?%|sem risco', textos, re.I), 'mensagem pronta fere regra da OAB'
+for id_ in ('primeiro_contato_formulario','primeiro_contato_urgente','spin_problema','spin_implicacao',
+            'spin_convite_ligacao','objecao_vou_pensar','objecao_desconfianca','objecao_ja_tem_advogado','objecao_sem_interesse'):
+    assert f'id: "{id_}"' in msgs, id_
 # v3: o item virou "Atendimentos" (inbox bot + humano); o que importa é a rota no menu.
 assert '"/painel/atendimentos"' in (CLI/'src/components/painel/sidebar.tsx').read_text(encoding='utf-8')
 assert 'FilaFichas' in (CLI/'src/app/painel/page.tsx').read_text(encoding='utf-8'), 'Painel original de fichas deve ser preservado'

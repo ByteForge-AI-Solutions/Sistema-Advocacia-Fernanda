@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { EditarLeadModal } from "@/components/fichas/editar-lead-modal";
 import { TEMPERATURA_INFO, situacaoProximaAcao } from "@/lib/leads";
+import { ETAPA_INFO, MOTIVO_PERDA_LABEL, etapaAtiva, horasAlemDoLimite, type EstadoCadencia } from "@/lib/funil";
 import { GerarDocumentosModal } from "@/components/documentos/gerar-documentos-modal";
 import { assumirFicha, type Ficha } from "@/lib/fichas";
 import {
@@ -67,16 +68,32 @@ function plural(n: number, singular: string, pluralForm: string) {
  * @param podeAssumir titular/sócio: mostra "Assumir" em fichas sem responsável.
  * @param onAlterada chamada depois de assumir, para recarregar a fila.
  */
-export function FichaCard({ ficha, podeAssumir = false, onAlterada }: { ficha: Ficha; podeAssumir?: boolean; onAlterada?: () => void }) {
+export function FichaCard({
+  ficha,
+  podeAssumir = false,
+  onAlterada,
+  cadencia,
+}: {
+  ficha: Ficha;
+  podeAssumir?: boolean;
+  onAlterada?: () => void;
+  /** Estado da cadência de follow-up (migração v6), calculado pela fila. */
+  cadencia?: EstadoCadencia;
+}) {
   const [expandido, setExpandido] = useState(false);
   const [documentosAberto, setDocumentosAberto] = useState(false);
   const [assumindo, setAssumindo] = useState(false);
   const [erroAssumir, setErroAssumir] = useState<string | null>(null);
   const [editando, setEditando] = useState(false);
+  // Calculado uma vez na montagem: evita relógio na renderização (a fila recarrega a cada ação).
+  const [parado] = useState(() => (ficha.funil.disponivel ? horasAlemDoLimite(ficha.funil) : 0));
   const semResponsavel = ficha.advogado_id === null;
   const temperatura = ficha.lead.temperatura ? TEMPERATURA_INFO[ficha.lead.temperatura] : null;
   const acao = ficha.lead.disponivel
-    ? situacaoProximaAcao({ proxima_acao_em: ficha.lead.proxima_acao_em, ativo: !finalizadaStatus(ficha.status_original) })
+    ? situacaoProximaAcao({
+        proxima_acao_em: ficha.lead.proxima_acao_em,
+        ativo: ficha.funil.disponivel ? etapaAtiva(ficha.funil.etapa) : !finalizadaStatus(ficha.status_original),
+      })
     : null;
 
   function assumir() {
@@ -115,6 +132,25 @@ export function FichaCard({ ficha, podeAssumir = false, onAlterada }: { ficha: F
           <div className="min-w-0">
             <h3 className="truncate text-base font-semibold text-slate-900">{ficha.nome_cliente}</h3>
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              {ficha.funil.disponivel && (
+                <span
+                  title={`Entra: ${ETAPA_INFO[ficha.funil.etapa].entra}. Sai: ${ETAPA_INFO[ficha.funil.etapa].sai}. Máx.: ${ETAPA_INFO[ficha.funil.etapa].tempoMaxLabel}.`}
+                  className={`inline-flex items-center whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${ETAPA_INFO[ficha.funil.etapa].cor}`}
+                >
+                  {ETAPA_INFO[ficha.funil.etapa].numero ? `${ETAPA_INFO[ficha.funil.etapa].numero}. ` : ""}
+                  {ETAPA_INFO[ficha.funil.etapa].label}
+                </span>
+              )}
+              {parado > 0 && (
+                <span className="inline-flex items-center whitespace-nowrap rounded-full bg-red-600 px-2.5 py-0.5 text-xs font-semibold text-white">
+                  Parado além do limite
+                </span>
+              )}
+              {ficha.funil.nao_contatar && (
+                <span className="inline-flex items-center whitespace-nowrap rounded-full bg-slate-800 px-2.5 py-0.5 text-xs font-semibold text-white">
+                  Não contatar
+                </span>
+              )}
               <AreaBadge area={ficha.area_identificada} />
               {semResponsavel ? <SemResponsavelBadge /> : <VinculoBadge estagiario={ficha.estagiario} responsavel={ficha.responsavel} />}
             </div>
@@ -148,6 +184,30 @@ export function FichaCard({ ficha, podeAssumir = false, onAlterada }: { ficha: F
             </button>
             {erroAssumir && <p role="alert" className="w-full text-xs text-red-700">{erroAssumir}</p>}
           </div>
+        )}
+
+        {ficha.funil.etapa === "perdido" && ficha.funil.motivo_perda && (
+          <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-900">
+            <strong>Motivo de perda:</strong> {MOTIVO_PERDA_LABEL[ficha.funil.motivo_perda]}
+            {ficha.funil.motivo_perda_detalhe ? ` — ${ficha.funil.motivo_perda_detalhe}` : ""}
+          </p>
+        )}
+
+        {cadencia?.tipo === "pendente" && (
+          <p className={`mt-4 text-xs ${cadencia.situacao === "vencido" ? "font-semibold text-red-700" : "text-slate-500"}`}>
+            Próximo toque: dia {cadencia.passo.dia} ({cadencia.indice + 1}/{cadencia.total}) · {formatoData.format(cadencia.devidoEm)} — {cadencia.passo.titulo}
+            {cadencia.reiniciadaPorResposta ? " · reiniciada após resposta do lead" : ""}
+          </p>
+        )}
+        {cadencia?.tipo === "pausada" && (
+          <p className="mt-4 text-xs font-medium text-emerald-700">
+            Lead respondeu em {formatoData.format(new Date(cadencia.respondeuEm))}: cadência pausada. Mova para &quot;{ETAPA_INFO[cadencia.sugestao].label}&quot;.
+          </p>
+        )}
+        {cadencia?.tipo === "bloqueada" && (
+          <p className="mt-4 text-xs text-slate-500">
+            Cadência desligada: {cadencia.motivo === "nao_contatar" ? "cliente pediu para não ser contatado" : "cliente saiu da lista no WhatsApp (opt-out)"}.
+          </p>
         )}
 
         {acao && (

@@ -1,5 +1,6 @@
 import type { PostgrestError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase/client";
+import type { EtapaFunil, MotivoPerda } from "@/lib/funil";
 
 /**
  * Gestão de leads (migração 20261118_v5_leads_posvenda.sql), segundo o documento
@@ -189,7 +190,13 @@ export function simularExemplo(valor: number, descontoAte: number, parcelas: num
 // ---------- gravação ----------
 
 export interface DadosLead extends QualificacaoLead {
-  status_atendimento: string;
+  /** Sem a v6. Com a v6, o status acompanha a etapa (trigger crm_fichas_lead). */
+  status_atendimento?: string;
+  /** Campos do funil (migração v6). */
+  etapa_funil?: EtapaFunil;
+  motivo_perda?: MotivoPerda | null;
+  motivo_perda_detalhe?: string | null;
+  nao_contatar?: boolean;
   proxima_acao: string | null;
   /** ISO 8601. */
   proxima_acao_em: string | null;
@@ -198,6 +205,7 @@ export interface DadosLead extends QualificacaoLead {
 function mensagemErro(error: PostgrestError): string {
   if (error.hint === "crm_proxima_acao_obrigatoria") return "Lead ativo precisa de próxima ação e data (regra de ouro).";
   if (error.hint === "crm_dado_pessoal") return AVISO_DOCUMENTO;
+  if (`${error.message} ${error.details ?? ""}`.includes("fichas_perdido_exige_motivo")) return "Informe o motivo de perda para mover o lead para Perdido.";
   if (["42703", "PGRST204"].includes(error.code)) {
     return "Os campos de lead exigem a migração 20261118_v5_leads_posvenda.sql no Supabase.";
   }

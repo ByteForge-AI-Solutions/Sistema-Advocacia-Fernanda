@@ -15,7 +15,8 @@ import {
   RefreshCw,
   UserRound,
 } from "lucide-react";
-import { CalendarioMensal, limitesDoMes, primeiroDiaDoMes } from "@/components/agenda/calendario-mensal";
+import { CalendarioMensal, limitesDoMes, primeiroDiaDoMes, type ToqueAgenda } from "@/components/agenda/calendario-mensal";
+import { carregarFollowup, estadoCadencia } from "@/lib/funil";
 import { ReuniaoModal } from "@/components/agenda/reuniao-modal";
 import { buscarFeriados, buscarPrazosPeriodo, type PrazoProcessual } from "@/lib/prazos";
 import { useAuth } from "@/components/auth-provider";
@@ -31,7 +32,7 @@ import {
   type EventoAgenda,
 } from "@/lib/agenda";
 import { chaveDia, fmtHora } from "@/lib/datas";
-import { paraPrioridade } from "@/lib/fichas";
+import { buscarFichas, paraPrioridade } from "@/lib/fichas";
 
 type Periodo = "proximos" | "todos";
 type Visao = "mes" | "lista";
@@ -175,6 +176,42 @@ export default function AgendaPage() {
   const [mes, setMes] = useState<Date>(() => primeiroDiaDoMes(new Date()));
   const [prazosMes, setPrazosMes] = useState<PrazoProcessual[]>([]);
   const [feriados, setFeriados] = useState<Set<string>>(new Set());
+  const [toques, setToques] = useState<ToqueAgenda[]>([]);
+
+  // Próximos toques de follow-up (migração v6): um por lead, no dia em que vencem.
+  useEffect(() => {
+    if (!perfil) return;
+    let atual = true;
+    buscarFichas(perfil)
+      .then(async (fichas) => {
+        const comFunil = fichas.filter((f) => f.funil.disponivel);
+        if (comFunil.length === 0) return [];
+        const { toques: registrados, contatos } = await carregarFollowup(comFunil.map((f) => f.id));
+        const agoraLocal = new Date();
+        return comFunil.flatMap((f): ToqueAgenda[] => {
+          const est = estadoCadencia({ funil: f.funil, temperatura: f.lead.temperatura }, registrados, contatos.get(f.id), agoraLocal);
+          if (est.tipo !== "pendente") return [];
+          return [
+            {
+              fichaId: f.id,
+              cliente: f.nome_cliente,
+              advogadoId: f.advogado_id,
+              devidoEm: est.devidoEm,
+              dia: est.passo.dia,
+              titulo: est.passo.titulo,
+              vencido: est.situacao === "vencido",
+            },
+          ];
+        });
+      })
+      .then(
+        (lista) => atual && setToques(lista),
+        () => atual && setToques([]),
+      );
+    return () => {
+      atual = false;
+    };
+  }, [perfil, versao]);
 
   useEffect(() => {
     let atual = true;
@@ -246,6 +283,10 @@ export default function AgendaPage() {
   const eventosFiltrados = useMemo(
     () => (filtroResponsavel === "todos" ? eventos : eventos.filter((e) => e.advogado_id === filtroResponsavel)),
     [eventos, filtroResponsavel],
+  );
+  const toquesFiltrados = useMemo(
+    () => (filtroResponsavel === "todos" ? toques : toques.filter((t) => t.advogadoId === filtroResponsavel)),
+    [toques, filtroResponsavel],
   );
   const prazosFiltrados = useMemo(
     () => (filtroResponsavel === "todos" ? prazosMes : prazosMes.filter((p) => p.advogado_id === filtroResponsavel)),
@@ -397,6 +438,8 @@ export default function AgendaPage() {
             onMudarMes={setMes}
             onAbrirEvento={(evento) => setModal({ modo: "editar", evento })}
             onAbrirPrazo={() => router.push("/painel/processos")}
+            toques={toquesFiltrados}
+            onAbrirToque={() => router.push("/painel")}
           />
         ) : grupos.length === 0 || !agora ? (
           <div className="flex flex-col items-center rounded-xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center">

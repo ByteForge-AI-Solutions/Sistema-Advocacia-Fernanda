@@ -128,11 +128,17 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
   3. `20261118_v3_crm_modulos.sql`;
   4. `20261118_v4_cargo_socio.sql`: cargo `socio`, nova `pode_acessar_ficha` e sócios no rodízio do bot. Ela redefine `dfu_ofertar`, `dfu_criar_ficha` e `dfu_confirmar`, cópias literais em que só muda o filtro de cargo. **Se a migração do bot for reaplicada, reaplique a v4 depois.**
   5. `20261118_v5_leads_posvenda.sql`: campos de lead em `fichas_clientes` (próxima ação, qualificação, temperatura) e categorias de pós-venda em `processos_prazos`. Não cria políticas novas, não redefine `pode_acessar_ficha` e não toca nas funções `dfu_*`.
+  6. `20261118_v6_funil_followup.sql`: funil de 12 etapas, motivo de perda, cadência de follow-up e indicadores do funil.
+     - Colunas novas em `fichas_clientes`: `etapa_funil`, `etapa_desde`, `motivo_perda`, `motivo_perda_detalhe`, `cadencia_desde` e `nao_contatar`.
+     - O trigger `crm_fichas_lead` (v5) é substituído.
+     - Novos: tabela `crm_followup_toques` e RPCs `crm_followup_registrar` e `crm_indicadores_funil`.
+     - Não toca em `pode_acessar_ficha`, nas funções `dfu_*` nem em `crm_indicadores`.
 - **Hashes:** `01-agentes-ia/tests/check_integration.py` confere o SHA-256 de 8 arquivos: `advogados.ts`, `agenda.ts`, `disponibilidade.ts`, `fichas.ts`, `auth-provider.tsx`, `reuniao-modal.tsx`, `app/painel/page.tsx` e `schema.sql`.
   - **Não edite esses arquivos.** Crie funcionalidade em arquivos novos. Se a mudança for inevitável, atualize o hash no teste e avise a equipe do bot.
   - O hash ignora a diferença CRLF/LF.
   - Na v4 (18/11/2026), `advogados.ts`, `agenda.ts`, `fichas.ts`, `reuniao-modal.tsx` e `app/painel/page.tsx` foram alterados de propósito para o cargo `socio`, e os hashes foram renovados.
   - Na v5, só `fichas.ts` mudou (campos de lead e ordenação por cor), e o hash foi renovado.
+  - Na v6, só `fichas.ts` mudou de novo (campos do funil com fallback), e o hash foi renovado.
   - Para rodar o teste no Windows: `py 01-agentes-ia/tests/check_integration.py`.
   - A última asserção falha enquanto existir `03-crm-frontend/.env.local`. Ela confere o pacote de entrega; na máquina de desenvolvimento, rode o teste numa cópia feita com `git ls-files -co --exclude-standard`.
 - **Escrita nas `dfu_*`:** o CRM nunca escreve direto nelas. Usa as RPCs `crm_atendimento_*` (assumir, responder, transferir, devolver_bot, encerrar, etiquetas). Também chama a original `dfu_assumir_atendimento` no caso padrão.
@@ -161,6 +167,28 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
   - Bloqueia o salvamento em: próxima ação, campos de prazo e etiquetas.
   - Em notas internas, pede confirmação.
 - **Simulação (OAB):** `simularExemplo` roda só no navegador, nunca é gravada e sempre aparece como "exemplo" ("até", "depende da análise"). Não envie valores ou percentuais por escrito ao cliente.
+- **Funil (v6):** `fichas_clientes.etapa_funil`. Etapas e regras ficam em `ETAPA_INFO` (`src/lib/funil.ts`); o CHECK do banco usa a mesma lista.
+  - **Ativas:** `novo_lead`, `primeiro_contato`, `em_conversa`, `horario_confirmado`, `diagnostico_ofertado`, `diagnostico_pago`, `em_analise`, `proposta`, `cliente_ativo` e `encerrado`.
+  - **Saídas:** `sem_resposta` e `perdido`.
+  - **Motivo de perda obrigatório:** o CHECK `fichas_perdido_exige_motivo` vale para todos, inclusive a `service_role`. Valores: `preco`, `ja_tem_advogado`, `resolveu_sozinho`, `divida_pequena`, `sem_urgencia`, `nao_respondeu` e `desconfianca`. Ao sair de `perdido`, o trigger limpa o motivo.
+  - **Etapa e status** são sincronizados pelo trigger:
+    - quando a etapa muda, `status_atendimento` acompanha;
+    - quando só o status muda (o bot), `agendado` move a etapa para `horario_confirmado` e `finalizado` para `encerrado`.
+  - **Regra de ouro:** com a v6, lead ativo é `etapa_funil` fora de `encerrado`/`perdido`.
+  - **Datas:** `etapa_desde` alimenta o alerta "parado além do tempo máximo". `cadencia_desde` reinicia a cada troca de etapa, exceto `primeiro_contato` → `sem_resposta`.
+- **Follow-up (v6):** a cadência fica no código (`CADENCIAS` em `funil.ts`) e os toques feitos, no banco (`crm_followup_toques`, só SELECT e INSERT, RLS via `pode_acessar_ficha`).
+  - **Quais toques:** `estadoCadencia` calcula o próximo pela etapa, por `cadencia_desde`, pelos toques do ciclo e pela última mensagem do cliente (`dfu_atendimentos.ultima_msg_cliente_em`).
+  - **Lead respondeu:** em novo lead, primeiro contato e sem resposta, a cadência **pausa** e sugere "Em conversa". Nas demais etapas, recomeça a contar da resposta.
+  - **Limites:** no máximo 1 toque por dia e nada aos domingos, exceto lead urgente.
+  - **Opt-out:** `nao_contatar` ou opt-out no WhatsApp desliga tudo.
+  - **Registro:** `registrarToque` usa a RPC `crm_followup_registrar` (SECURITY INVOKER), que grava o toque e a próxima ação numa transação só.
+  - **Onde aparece:** os toques entram nas "Tarefas do dia" (`montarTarefas`) e na agenda mensal.
+  - **Envio:** o envio de follow-up é feito pelo link wa.me (WhatsApp de quem atende), porque a API só aceita texto livre dentro da janela de 24 h.
+- **Mensagens prontas (v6):** `src/lib/mensagens-prontas.ts`, com SPIN e objeções.
+  - Variáveis: `{nome}`, `{advogado}` e `{oab}` (a OAB vem dos dados do escritório no gerador de documentos).
+  - No chat, o painel "Mensagens prontas" só preenche o campo de resposta, nunca envia sozinho.
+  - Antes de enviar: variáveis pendentes bloqueiam o envio, e `avisosOab` (valor, percentual, promessa de resultado) pede confirmação.
+  - O teste de integração reprova mensagem pronta com `R$`, `%`, "garant…" ou "com certeza".
 - **Google Calendar (preparação):**
   - colunas `google_*` e `link_reuniao` em `agenda_advogados`;
   - fila `agenda_google_fila`, alimentada pelo trigger `crm_agenda_google_sync` apenas para advogados com `agenda_google_contas.ativo`;
@@ -232,7 +260,9 @@ Organização:
 - `src/components/auth-provider.tsx`: contexto de autenticação (`useAuth()` → `estado`, `perfil`, `entrar`, `sair`). O perfil vindo de `advogados` fica disponível para todo o app.
 - `src/lib/fichas.ts`: tipos `Ficha`/`Prioridade`/`StatusAtendimento`, `ordenarFila` e `buscarFichas(perfil)`, que aplica a regra titular/estagiário. CPF não é carregado na listagem (LGPD).
 - `src/lib/leads.ts` (v5): qualificação, `calcularTemperatura`, `TEMPERATURA_INFO` (cores), `situacaoProximaAcao`, `contemDocumentoPessoal`/`mascararDocumento`, `simularExemplo` e `salvarLead`.
-- `src/components/fichas/editar-lead-modal.tsx` (v5): botão "Editar lead" no cartão. Edita status, próxima ação (obrigatória), qualificação com prévia da cor e a simulação de exemplo. Não mostra nem edita CPF.
+- `src/components/fichas/editar-lead-modal.tsx` (v5/v6): botão "Editar lead" no cartão. Edita etapa do funil (ou status, sem a v6), motivo de perda, "não contatar", próxima ação (obrigatória), qualificação com prévia da cor e a simulação de exemplo. Ao trocar de etapa, sugere o 1º toque da cadência. Não mostra nem edita CPF.
+- `src/lib/funil.ts` + `src/components/fichas/tarefas-do-dia.tsx` + `registrar-toque-modal.tsx` (v6): funil, cadência, tarefas do dia e registro de toque com mensagem sugerida e link wa.me.
+- `src/lib/mensagens-prontas.ts` + `src/components/atendimentos/mensagens-prontas-painel.tsx` (v6): biblioteca de mensagens no chat.
 - `src/components/fichas/`: `badges.tsx` (cores de prioridade e status e a etiqueta "Sob supervisão - Nome"), `ficha-card.tsx` e `fila-fichas.tsx` (filtros por status e resumo por prioridade).
 - `src/components/esqueci-senha-modal.tsx`: modal que chama `resetPasswordForEmail` com `redirectTo` apontando para `/redefinir-senha`.
 - `src/lib/agenda.ts`: interface `AgendaAdvogado` (espelho da tabela) e `EventoAgenda` (+ estagiário). `buscarAgenda(perfil)` aplica a regra titular/estagiário e ordena por `data_hora_inicio` crescente.

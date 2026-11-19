@@ -10,6 +10,7 @@ import {
   type OndeDivida,
   type Temperatura,
 } from "@/lib/leads";
+import { FUNIL_INDISPONIVEL, isEtapa, isMotivoPerda, type FunilFicha } from "@/lib/funil";
 
 export const PRIORIDADES = ["alta", "media", "baixa"] as const;
 export type Prioridade = (typeof PRIORIDADES)[number];
@@ -53,6 +54,8 @@ export interface Ficha {
   responsavel: MembroEquipe | null;
   /** Campos de lead (migração v5). Ficam vazios/false se a migração ainda não foi aplicada. */
   lead: LeadFicha;
+  /** Etapa do funil e cadência (migração v6). disponivel = false sem a migração. */
+  funil: FunilFicha;
 }
 
 export interface LeadFicha {
@@ -88,11 +91,31 @@ interface FichaRow {
   dor_principal?: string | null;
   onde_divida?: string[] | null;
   temperatura?: string | null;
+  etapa_funil?: string | null;
+  etapa_desde?: string | null;
+  motivo_perda?: string | null;
+  motivo_perda_detalhe?: string | null;
+  cadencia_desde?: string | null;
+  nao_contatar?: boolean | null;
 }
 
 const COLUNAS_BASE =
   "id, nome_cliente, telefone, area_identificada, prioridade, motivo_prioridade, resumo_fatos, documentos_urls, processos_encontrados, advogado_id, status_atendimento, created_at";
 const COLUNAS_LEAD = "proxima_acao, proxima_acao_em, faixa_divida, bloqueio_penhora, dor_principal, onde_divida, temperatura";
+const COLUNAS_FUNIL = "etapa_funil, etapa_desde, motivo_perda, motivo_perda_detalhe, cadencia_desde, nao_contatar";
+
+function paraFunil(row: FichaRow, disponivel: boolean): FunilFicha {
+  if (!disponivel) return FUNIL_INDISPONIVEL;
+  return {
+    disponivel: true,
+    etapa: isEtapa(row.etapa_funil) ? row.etapa_funil : "novo_lead",
+    etapa_desde: row.etapa_desde ?? null,
+    motivo_perda: isMotivoPerda(row.motivo_perda) ? row.motivo_perda : null,
+    motivo_perda_detalhe: row.motivo_perda_detalhe ?? null,
+    cadencia_desde: row.cadencia_desde ?? null,
+    nao_contatar: row.nao_contatar === true,
+  };
+}
 
 const daLista = <T extends string>(lista: readonly T[], v: unknown): T | null =>
   typeof v === "string" && (lista as readonly string[]).includes(v) ? (v as T) : null;
@@ -182,10 +205,16 @@ export async function buscarFichas(perfil: Advogado): Promise<Ficha[]> {
     return consulta.overrideTypes<FichaRow[], { merge: false }>();
   };
 
+  // Do mais completo ao mais simples: sem a v6 (funil) ou a v5 (lead), a coluna não existe
+  // (42703) e a fila continua funcionando com o que houver.
   let leadDisponivel = true;
-  let { data, error } = await consultar(`${COLUNAS_BASE}, ${COLUNAS_LEAD}`);
+  let funilDisponivel = true;
+  let { data, error } = await consultar(`${COLUNAS_BASE}, ${COLUNAS_LEAD}, ${COLUNAS_FUNIL}`);
   if (error?.code === "42703") {
-    // Banco ainda sem a migração v5: a fila continua funcionando sem os campos de lead.
+    funilDisponivel = false;
+    ({ data, error } = await consultar(`${COLUNAS_BASE}, ${COLUNAS_LEAD}`));
+  }
+  if (error?.code === "42703") {
     leadDisponivel = false;
     ({ data, error } = await consultar(COLUNAS_BASE));
   }
@@ -208,6 +237,7 @@ export async function buscarFichas(perfil: Advogado): Promise<Ficha[]> {
     created_at: row.created_at,
     ...vinculo(row.advogado_id, perfil.id, membroPorId),
     lead: paraLead(row, leadDisponivel),
+    funil: paraFunil(row, funilDisponivel && leadDisponivel),
   }));
 
   return ordenarFila(fichas);
