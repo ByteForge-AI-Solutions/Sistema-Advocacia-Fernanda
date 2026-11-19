@@ -12,10 +12,13 @@ import {
   LoaderCircle,
   Paperclip,
   Pencil,
+  Wallet,
   Phone,
   UserRoundCheck,
 } from "lucide-react";
 import { EditarLeadModal } from "@/components/fichas/editar-lead-modal";
+import { FichaClienteModal } from "@/components/clientes/ficha-cliente-modal";
+import type { Advogado } from "@/lib/advogados";
 import { TEMPERATURA_INFO, situacaoProximaAcao } from "@/lib/leads";
 import { ETAPA_INFO, MOTIVO_PERDA_LABEL, etapaAtiva, horasAlemDoLimite, type EstadoCadencia } from "@/lib/funil";
 import { GerarDocumentosModal } from "@/components/documentos/gerar-documentos-modal";
@@ -73,18 +76,22 @@ export function FichaCard({
   podeAssumir = false,
   onAlterada,
   cadencia,
+  perfil,
 }: {
   ficha: Ficha;
   podeAssumir?: boolean;
   onAlterada?: () => void;
   /** Estado da cadência de follow-up (migração v6), calculado pela fila. */
   cadencia?: EstadoCadencia;
+  /** Habilita "Cliente e honorários" (cadastro, financeiro e documentos, migração v7). */
+  perfil?: Advogado;
 }) {
   const [expandido, setExpandido] = useState(false);
   const [documentosAberto, setDocumentosAberto] = useState(false);
   const [assumindo, setAssumindo] = useState(false);
   const [erroAssumir, setErroAssumir] = useState<string | null>(null);
   const [editando, setEditando] = useState(false);
+  const [clienteAberto, setClienteAberto] = useState(false);
   // Calculado uma vez na montagem: evita relógio na renderização (a fila recarrega a cada ação).
   const [parado] = useState(() => (ficha.funil.disponivel ? horasAlemDoLimite(ficha.funil) : 0));
   const semResponsavel = ficha.advogado_id === null;
@@ -294,11 +301,21 @@ export function FichaCard({
               {plural(ficha.qtd_processos, "processo encontrado", "processos encontrados")}
             </span>
           )}
+          {perfil && (
+            <button
+              type="button"
+              onClick={() => setClienteAberto(true)}
+              className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 transition hover:bg-navy-50"
+            >
+              <Wallet className="size-3.5" aria-hidden />
+              Cliente e honorários
+            </button>
+          )}
           {ficha.lead.disponivel && (
             <button
               type="button"
               onClick={() => setEditando(true)}
-              className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 transition hover:bg-navy-50"
+              className={`${perfil ? "" : "ml-auto "}inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 transition hover:bg-navy-50`}
             >
               <Pencil className="size-3.5" aria-hidden />
               Editar lead
@@ -307,13 +324,21 @@ export function FichaCard({
           <button
             type="button"
             onClick={() => setDocumentosAberto(true)}
-            className={`${ficha.lead.disponivel ? "" : "ml-auto "}inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 transition hover:bg-navy-50`}
+            className={`${ficha.lead.disponivel || perfil ? "" : "ml-auto "}inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 transition hover:bg-navy-50`}
           >
             <FilePen className="size-3.5" aria-hidden />
             Gerar documentos
           </button>
         </footer>
         {documentosAberto && <GerarDocumentosModal fichaId={ficha.id} onFechar={() => setDocumentosAberto(false)} />}
+        {clienteAberto && perfil && (
+          <FichaClienteModal
+            ficha={{ id: ficha.id, nome_cliente: ficha.nome_cliente, advogado_id: ficha.advogado_id }}
+            perfil={perfil}
+            onFechar={() => setClienteAberto(false)}
+            onAlterada={onAlterada}
+          />
+        )}
         {editando && (
           <EditarLeadModal
             ficha={ficha}

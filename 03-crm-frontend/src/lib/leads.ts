@@ -123,7 +123,7 @@ export function situacaoProximaAcao(
 
 // ---------- LGPD: CPF/CNPJ fora de textos livres ----------
 
-function cpfValido(d: string): boolean {
+export function cpfValido(d: string): boolean {
   if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return false;
   const dv = (base: string, pesoIni: number) => {
     const soma = [...base].reduce((s, c, i) => s + Number(c) * (pesoIni - i), 0);
@@ -133,7 +133,7 @@ function cpfValido(d: string): boolean {
   return dv(d.slice(0, 9), 10) === Number(d[9]) && dv(d.slice(0, 10), 11) === Number(d[10]);
 }
 
-function cnpjValido(d: string): boolean {
+export function cnpjValido(d: string): boolean {
   if (d.length !== 14 || /^(\d)\1{13}$/.test(d)) return false;
   const dv = (base: string) => {
     const pesos = base.length === 12 ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2] : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];

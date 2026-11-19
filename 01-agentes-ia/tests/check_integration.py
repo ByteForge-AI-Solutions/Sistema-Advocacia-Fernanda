@@ -161,6 +161,27 @@ assert not re.search(r'R\$|%|garant|com certeza|100\s?%|sem risco', textos, re.I
 for id_ in ('primeiro_contato_formulario','primeiro_contato_urgente','spin_problema','spin_implicacao',
             'spin_convite_ligacao','objecao_vou_pensar','objecao_desconfianca','objecao_ja_tem_advogado','objecao_sem_interesse'):
     assert f'id: "{id_}"' in msgs, id_
+# v7: cadastro do cliente, honorários e repositório de documentos (Storage privado).
+v7=(ROOT/'04-banco-dados/migrations/20261119_v7_financeiro_documentos.sql').read_text(encoding='utf-8')
+assert re.search(r'BEGIN\s*;',v7) and v7.count('$$') % 2 == 0 and v7.rstrip().endswith('COMMIT;')
+assert 'DROP TABLE' not in v7.upper()
+for proibido in ('CREATE OR REPLACE FUNCTION public.pode_acessar_ficha(', 'CREATE OR REPLACE FUNCTION public.dfu_',
+                 'CREATE OR REPLACE FUNCTION public.crm_fichas_lead', 'CREATE OR REPLACE FUNCTION public.crm_indicadores'):
+    assert proibido not in v7, proibido
+for tabela in ('clientes_cadastro','fichas_documentos','fin_contratos','fin_parcelas'):
+    assert f'ALTER TABLE public.{tabela} ENABLE ROW LEVEL SECURITY' in v7, f'RLS ausente em {tabela}'
+    assert f'REVOKE ALL ON public.{tabela}' in v7 or f'public.{tabela} FROM PUBLIC, anon' in v7 or f'public.fin_contratos, public.fin_parcelas FROM PUBLIC, anon' in v7
+assert "'documentos-clientes', 'documentos-clientes', false" in v7 and 'SET public = false' in v7, 'bucket precisa ser privado'
+assert 'text/html' not in v7 and 'image/svg' not in v7, 'bucket não aceita HTML/SVG (XSS)'
+for pol in ('crm documentos: leitura','crm documentos: envio','crm documentos: exclusão'):
+    assert f'"{pol}" ON storage.objects' in v7, pol
+assert 'FOR UPDATE' not in v7.split('ON storage.objects')[-1].split('-- ====')[0], 'arquivo não é sobrescrito'
+assert 'SECURITY INVOKER' in v7.split('crm_fin_criar_contrato(')[1].split('$$')[0], 'criação de contrato respeita RLS'
+assert 'ON DELETE RESTRICT' in v7.split('CREATE TABLE IF NOT EXISTS public.fin_contratos')[1].split(');')[0], 'histórico financeiro protegido'
+repo=(CLI/'src/lib/repositorio.ts').read_text(encoding='utf-8')
+assert 'createSignedUrl' in repo and 'getPublicUrl' not in repo, 'documentos só por URL assinada'
+assert 'crypto.randomUUID()' in repo, 'nome original fora do caminho do Storage (LGPD)'
+assert 'cpf' not in (CLI/'src/lib/financeiro.ts').read_text(encoding='utf-8').lower(), 'financeiro não lê CPF'
 # v3: o item virou "Atendimentos" (inbox bot + humano); o que importa é a rota no menu.
 assert '"/painel/atendimentos"' in (CLI/'src/components/painel/sidebar.tsx').read_text(encoding='utf-8')
 assert 'FilaFichas' in (CLI/'src/app/painel/page.tsx').read_text(encoding='utf-8'), 'Painel original de fichas deve ser preservado'

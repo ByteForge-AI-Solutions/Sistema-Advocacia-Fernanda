@@ -369,7 +369,7 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
           <ul className="space-y-3">
             {visiveis.map((ficha) => (
               <li key={ficha.id}>
-                <FichaCard ficha={ficha} podeAssumir={ehTitular(perfil.cargo)} onAlterada={atualizar} cadencia={estados.get(ficha.id)} />
+                <FichaCard ficha={ficha} podeAssumir={ehTitular(perfil.cargo)} onAlterada={atualizar} cadencia={estados.get(ficha.id)} perfil={perfil} />
               </li>
             ))}
           </ul>

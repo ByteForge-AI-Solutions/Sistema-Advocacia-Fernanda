@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, CircleAlert, FilePen, Info, LoaderCircle, Printer, X } from "lucide-react";
+import { ArrowLeft, CircleAlert, ClipboardCopy, FilePen, Info, LoaderCircle, Printer, X } from "lucide-react";
 import { AREAS_JURIDICAS, type AreaJuridica } from "@/lib/advogados";
 import {
   CSS_DOCUMENTO,
   MODELOS,
   carregarDadosIniciais,
+  copiarFormatado,
   gerarDocumentoHtml,
+  salvarQualificacaoNoCadastro,
   imprimirDocumento,
   lembrarDadosEscritorio,
   type DadosDocumento,
@@ -17,7 +19,7 @@ import {
 const campo =
   "mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-navy-500 focus:ring-3 focus:ring-navy-500/15";
 
-type CampoTexto = Exclude<keyof DadosDocumento, "area" | "poderes_especiais">;
+type CampoTexto = Exclude<keyof DadosDocumento, "area" | "poderes_especiais" | "cliente_tipo">;
 
 function Campo({
   id,
@@ -55,6 +57,8 @@ export function GerarDocumentosModal({ fichaId, onFechar }: { fichaId: string; o
   const [erro, setErro] = useState<string | null>(null);
   const [etapa, setEtapa] = useState<"dados" | "revisao">("dados");
   const [htmlGerado, setHtmlGerado] = useState("");
+  const [salvarCadastro, setSalvarCadastro] = useState(false);
+  const [aviso, setAviso] = useState<string | null>(null);
 
   useEffect(() => {
     const d = ref.current;
@@ -80,11 +84,29 @@ export function GerarDocumentosModal({ fichaId, onFechar }: { fichaId: string; o
 
   const mudar = (k: CampoTexto, valor: string) => setDados((d) => (d ? { ...d, [k]: valor } : d));
 
-  function gerar() {
+  async function gerar() {
     if (!dados) return;
     lembrarDadosEscritorio(dados);
+    setAviso(null);
+    if (salvarCadastro) {
+      try {
+        await salvarQualificacaoNoCadastro(fichaId, dados);
+        setAviso("Qualificação salva no cadastro do cliente.");
+      } catch (e) {
+        setAviso(e instanceof Error ? `Documento gerado, mas o cadastro não foi salvo: ${e.message}` : "Cadastro não salvo.");
+      }
+    }
     setHtmlGerado(gerarDocumentoHtml(modelo, dados));
     setEtapa("revisao");
+  }
+
+  async function copiar() {
+    try {
+      await copiarFormatado(editorRef.current?.innerHTML ?? htmlGerado);
+      setAviso("Documento copiado com a formatação. Cole no editor de texto ou na plataforma de assinatura.");
+    } catch {
+      setAviso("O navegador não permitiu copiar. Use Imprimir / salvar PDF.");
+    }
   }
 
   function voltar() {
@@ -142,21 +164,50 @@ export function GerarDocumentosModal({ fichaId, onFechar }: { fichaId: string; o
 
             <p className="mt-4 flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
               <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-              Os dados digitados aqui não são salvos no sistema. Campos vazios aparecem destacados no texto para você completar.
-              Modelos-base: revise o texto antes de imprimir.
+              Preenchido com o cadastro do cliente e o contrato de honorários da ficha (aba &quot;Cliente e honorários&quot;). O que você
+              alterar aqui só é salvo no cadastro se marcar a opção abaixo. Campos vazios aparecem destacados no texto. Modelos-base:
+              revise antes de imprimir.
             </p>
 
             <fieldset className="mt-5">
               <legend className="text-sm font-semibold text-slate-900">Cliente</legend>
-              <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                <Campo id="cliente_nome" rotulo="Nome completo" dados={dados} onMudar={mudar} className="sm:col-span-2" />
-                <Campo id="cliente_nacionalidade" rotulo="Nacionalidade" dados={dados} onMudar={mudar} />
-                <Campo id="cliente_estado_civil" rotulo="Estado civil" dados={dados} onMudar={mudar} />
-                <Campo id="cliente_profissao" rotulo="Profissão" dados={dados} onMudar={mudar} />
-                <Campo id="cliente_rg" rotulo="RG (com órgão emissor)" dados={dados} onMudar={mudar} />
-                <Campo id="cliente_cpf" rotulo="CPF" dados={dados} onMudar={mudar} dica="000.000.000-00" />
-                <Campo id="cliente_endereco" rotulo="Endereço completo com CEP" dados={dados} onMudar={mudar} className="sm:col-span-2" />
+              <div role="radiogroup" aria-label="Tipo de pessoa" className="mt-2 flex gap-2">
+                {(["pf", "pj"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    role="radio"
+                    aria-checked={dados.cliente_tipo === t}
+                    onClick={() => setDados({ ...dados, cliente_tipo: t })}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${dados.cliente_tipo === t ? "bg-navy-900 text-white" : "text-slate-600 ring-1 ring-inset ring-slate-200"}`}
+                  >
+                    {t === "pf" ? "Pessoa física" : "Pessoa jurídica"}
+                  </button>
+                ))}
               </div>
+              {dados.cliente_tipo === "pf" ? (
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <Campo id="cliente_nome" rotulo="Nome completo" dados={dados} onMudar={mudar} className="sm:col-span-2" />
+                  <Campo id="cliente_nacionalidade" rotulo="Nacionalidade" dados={dados} onMudar={mudar} />
+                  <Campo id="cliente_estado_civil" rotulo="Estado civil" dados={dados} onMudar={mudar} />
+                  <Campo id="cliente_profissao" rotulo="Profissão" dados={dados} onMudar={mudar} />
+                  <Campo id="cliente_rg" rotulo="RG (com órgão emissor)" dados={dados} onMudar={mudar} />
+                  <Campo id="cliente_cpf" rotulo="CPF" dados={dados} onMudar={mudar} dica="000.000.000-00" />
+                  <Campo id="cliente_endereco" rotulo="Endereço completo com CEP" dados={dados} onMudar={mudar} className="sm:col-span-2" />
+                </div>
+              ) : (
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <Campo id="cliente_nome" rotulo="Razão social" dados={dados} onMudar={mudar} className="sm:col-span-2" />
+                  <Campo id="cliente_cpf" rotulo="CNPJ" dados={dados} onMudar={mudar} dica="00.000.000/0000-00" />
+                  <Campo id="representante_nome" rotulo="Representante legal" dados={dados} onMudar={mudar} />
+                  <Campo id="representante_cpf" rotulo="CPF do representante" dados={dados} onMudar={mudar} dica="000.000.000-00" />
+                  <Campo id="cliente_endereco" rotulo="Sede (endereço completo com CEP)" dados={dados} onMudar={mudar} className="sm:col-span-2" />
+                </div>
+              )}
+              <label className="mt-3 flex items-start gap-2 text-xs text-slate-600">
+                <input type="checkbox" checked={salvarCadastro} onChange={(e) => setSalvarCadastro(e.target.checked)} className="mt-0.5 size-4 rounded border-slate-300" />
+                Salvar esta qualificação no cadastro do cliente (para os próximos documentos)
+              </label>
             </fieldset>
 
             <fieldset className="mt-5">
@@ -225,6 +276,7 @@ export function GerarDocumentosModal({ fichaId, onFechar }: { fichaId: string; o
           </div>
         )}
 
+        {aviso && <p role="status" className="border-t border-slate-200 bg-emerald-50 px-6 py-2 text-xs text-emerald-900">{aviso}</p>}
         {dados && !erro && (
           <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-6 py-3">
             {etapa === "revisao" ? (
@@ -235,13 +287,18 @@ export function GerarDocumentosModal({ fichaId, onFechar }: { fichaId: string; o
               <span />
             )}
             {etapa === "dados" ? (
-              <button type="button" onClick={gerar} className="rounded-lg bg-navy-900 px-5 py-2 text-sm font-semibold text-white hover:bg-navy-800">
+              <button type="button" onClick={() => void gerar()} className="rounded-lg bg-navy-900 px-5 py-2 text-sm font-semibold text-white hover:bg-navy-800">
                 Gerar texto
               </button>
             ) : (
-              <button type="button" onClick={imprimir} className="inline-flex items-center gap-2 rounded-lg bg-navy-900 px-5 py-2 text-sm font-semibold text-white hover:bg-navy-800">
-                <Printer className="size-4" aria-hidden /> Imprimir / salvar PDF
-              </button>
+              <span className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => void copiar()} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-navy-800 ring-1 ring-inset ring-navy-200 hover:bg-navy-50">
+                  <ClipboardCopy className="size-4" aria-hidden /> Copiar formatado
+                </button>
+                <button type="button" onClick={imprimir} className="inline-flex items-center gap-2 rounded-lg bg-navy-900 px-5 py-2 text-sm font-semibold text-white hover:bg-navy-800">
+                  <Printer className="size-4" aria-hidden /> Imprimir / salvar PDF
+                </button>
+              </span>
             )}
           </footer>
         )}

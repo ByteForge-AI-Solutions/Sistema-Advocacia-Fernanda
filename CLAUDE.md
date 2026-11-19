@@ -133,6 +133,12 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
      - O trigger `crm_fichas_lead` (v5) é substituído.
      - Novos: tabela `crm_followup_toques` e RPCs `crm_followup_registrar` e `crm_indicadores_funil`.
      - Não toca em `pode_acessar_ficha`, nas funções `dfu_*` nem em `crm_indicadores`.
+  7. `20261119_v7_financeiro_documentos.sql`: cadastro do cliente, honorários e repositório de documentos.
+     - Tabelas: `clientes_cadastro`, `fin_contratos`, `fin_parcelas` e `fichas_documentos`.
+     - Bucket **privado** `documentos-clientes` (20 MB; PDF, imagens, DOCX e XLSX), com políticas em `storage.objects`.
+     - Funções: `crm_pode_acessar_ficha_id`, `crm_pode_excluir` e `crm_pode_acessar_objeto`.
+     - RPC `crm_fin_criar_contrato` e trigger `crm_fin_avancar_funil`.
+     - Não toca em funções existentes nem em `pode_acessar_ficha`.
 - **Hashes:** `01-agentes-ia/tests/check_integration.py` confere o SHA-256 de 8 arquivos: `advogados.ts`, `agenda.ts`, `disponibilidade.ts`, `fichas.ts`, `auth-provider.tsx`, `reuniao-modal.tsx`, `app/painel/page.tsx` e `schema.sql`.
   - **Não edite esses arquivos.** Crie funcionalidade em arquivos novos. Se a mudança for inevitável, atualize o hash no teste e avise a equipe do bot.
   - O hash ignora a diferença CRLF/LF.
@@ -184,6 +190,29 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
   - **Registro:** `registrarToque` usa a RPC `crm_followup_registrar` (SECURITY INVOKER), que grava o toque e a próxima ação numa transação só.
   - **Onde aparece:** os toques entram nas "Tarefas do dia" (`montarTarefas`) e na agenda mensal.
   - **Envio:** o envio de follow-up é feito pelo link wa.me (WhatsApp de quem atende), porque a API só aceita texto livre dentro da janela de 24 h.
+- **Acesso aos dados da ficha (v7):** `crm_pode_acessar_ficha_id(ficha)` reproduz a visibilidade de `fichas_clientes`: `pode_acessar_ficha` mais as fichas sem responsável da área. Cadastro, documentos e arquivos usam essa regra. Contratos usam `pode_acessar_ficha(advogado_id)`. Excluir é só para titular, sócio e desenvolvedor (`crm_pode_excluir`); estagiário não exclui.
+- **Cadastro do cliente (v7):** `clientes_cadastro`, uma linha por ficha, PF ou PJ.
+  - `documento` guarda só dígitos (CPF 11 / CNPJ 14, com CHECK).
+  - Dados de PJ: razão social, sede e representante.
+  - **LGPD:** a fila e os indicadores nunca leem essa tabela; ela só é lida ao abrir o cadastro ou gerar um documento.
+  - Validação (`src/lib/cadastro.ts`): dígitos verificadores, e nada de CPF/CNPJ em nome ou endereço.
+- **Honorários (v7):**
+  - **Contratos:** `fin_contratos` com tipo `diagnostico`, `honorarios`, `exito` ou `outro`. Se a ficha for excluída, a exclusão é bloqueada (RESTRICT) para preservar o histórico.
+  - **Parcelas:** `fin_parcelas`. Pagamento registrado por inteiro: `pago_em` + `valor_pago` + `meio`. O comprovante tem de ser um documento da mesma ficha.
+  - **Status calculado** (`statusParcela`/`resumoContrato`): Pago, Pendente ou Atrasado (vencimento antes de hoje e sem pagamento).
+  - **Criação:** `crm_fin_criar_contrato` (SECURITY INVOKER) é atômica e exige que a soma das parcelas bata com o total. `dividirParcelas` trabalha em centavos.
+  - **Funil:** o 1º pagamento confirmado move o lead (trigger SECURITY DEFINER, que só avança e define a próxima ação):
+    - contrato `diagnostico` → `diagnostico_pago`;
+    - `honorarios`/`exito` → `cliente_ativo`.
+  - **Página `/painel/financeiro`:** atrasadas, a vencer em 30 dias e recebidas no mês, com filtro por advogado.
+- **Repositório (v7):** `fichas_documentos` + Storage.
+  - **Caminho:** `<ficha_id>/<uuid>.<ext>`. O nome original não vai para o caminho (LGPD), e o RLS do Storage confere o 1º segmento.
+  - **Download:** só por URL assinada de 2 minutos (`urlTemporaria`); nunca `getPublicUrl`.
+  - **Sem UPDATE:** para trocar um arquivo, envie uma nova versão.
+  - **Envio:** se o registro do metadado falhar, o arquivo enviado é removido.
+- **Documentos gerados (v7):** o gerador preenche a qualificação a partir de `clientes_cadastro` (PF ou PJ) e o valor, o percentual de êxito, a forma de pagamento e o objeto a partir do contrato de honorários mais recente.
+  - O que for alterado no gerador só vai para o cadastro se o usuário marcar a opção.
+  - Saídas: "Imprimir / salvar PDF" (iframe A4) e "Copiar formatado" (HTML + texto na área de transferência).
 - **Mensagens prontas (v6):** `src/lib/mensagens-prontas.ts`, com SPIN e objeções.
   - Variáveis: `{nome}`, `{advogado}` e `{oab}` (a OAB vem dos dados do escritório no gerador de documentos).
   - No chat, o painel "Mensagens prontas" só preenche o campo de resposta, nunca envia sozinho.
@@ -263,6 +292,9 @@ Organização:
 - `src/components/fichas/editar-lead-modal.tsx` (v5/v6): botão "Editar lead" no cartão. Edita etapa do funil (ou status, sem a v6), motivo de perda, "não contatar", próxima ação (obrigatória), qualificação com prévia da cor e a simulação de exemplo. Ao trocar de etapa, sugere o 1º toque da cadência. Não mostra nem edita CPF.
 - `src/lib/funil.ts` + `src/components/fichas/tarefas-do-dia.tsx` + `registrar-toque-modal.tsx` (v6): funil, cadência, tarefas do dia e registro de toque com mensagem sugerida e link wa.me.
 - `src/lib/mensagens-prontas.ts` + `src/components/atendimentos/mensagens-prontas-painel.tsx` (v6): biblioteca de mensagens no chat.
+- `src/lib/cadastro.ts`, `src/lib/financeiro.ts`, `src/lib/repositorio.ts` + `src/components/clientes/*` (v7):
+  - botão "Cliente e honorários" no cartão da ficha, que abre o `FichaClienteModal` com as abas Cadastro, Honorários e Documentos;
+  - `registrar-pagamento-modal.tsx`, compartilhado com `src/app/painel/financeiro`.
 - `src/components/fichas/`: `badges.tsx` (cores de prioridade e status e a etiqueta "Sob supervisão - Nome"), `ficha-card.tsx` e `fila-fichas.tsx` (filtros por status e resumo por prioridade).
 - `src/components/esqueci-senha-modal.tsx`: modal que chama `resetPasswordForEmail` com `redirectTo` apontando para `/redefinir-senha`.
 - `src/lib/agenda.ts`: interface `AgendaAdvogado` (espelho da tabela) e `EventoAgenda` (+ estagiário). `buscarAgenda(perfil)` aplica a regra titular/estagiário e ordena por `data_hora_inicio` crescente.

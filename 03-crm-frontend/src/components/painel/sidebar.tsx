@@ -11,6 +11,7 @@ import {
   LogOut,
   MessageCircle,
   Scale,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { CARGO_LABEL, type Advogado } from "@/lib/advogados";
@@ -41,7 +42,10 @@ const SECOES: { titulo: string; itens: ItemMenu[] }[] = [
   },
   {
     titulo: "Gestão",
-    itens: [{ href: "/painel/dashboard", label: "Indicadores", icone: ChartNoAxesColumn }],
+    itens: [
+      { href: "/painel/financeiro", label: "Financeiro", icone: Wallet },
+      { href: "/painel/dashboard", label: "Indicadores", icone: ChartNoAxesColumn },
+    ],
   },
 ];
 

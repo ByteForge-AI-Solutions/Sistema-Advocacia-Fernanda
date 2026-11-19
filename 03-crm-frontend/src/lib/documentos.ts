@@ -1,10 +1,14 @@
 import { supabase } from "@/lib/supabase/client";
 import { AREAS_JURIDICAS, isAreaJuridica, type AreaJuridica } from "@/lib/advogados";
+import { carregarCadastro, formatarDocumento, salvarCadastro, soDigitos, type ClienteCadastro, type TipoPessoa } from "@/lib/cadastro";
+import { buscarFinanceiroFicha, moedaSemSimbolo, textoFormaPagamento } from "@/lib/financeiro";
 
 /**
  * Modelos-base de documentos (Contrato de Honorários e Procuração Ad Judicia).
- * Os dados digitados no gerador NÃO são gravados no banco (LGPD: minimização);
- * só o CPF é lido da ficha, sob RLS, no momento da geração.
+ * Preenchimento automático (migração v7): qualificação do cadastro do cliente
+ * (clientes_cadastro, PF ou PJ) e valores/forma de pagamento do contrato de honorários
+ * mais recente. Sem a v7, usa só o nome e o CPF da ficha. Alterações digitadas aqui só
+ * vão para o cadastro se o usuário marcar "salvar no cadastro".
  * Os textos são modelos de partida: o advogado responsável deve revisá-los.
  */
 
@@ -16,6 +20,7 @@ export const MODELOS: { valor: ModeloDocumento; label: string }[] = [
 ];
 
 export interface DadosDocumento {
+  cliente_tipo: TipoPessoa;
   cliente_nome: string;
   cliente_nacionalidade: string;
   cliente_estado_civil: string;
@@ -23,6 +28,9 @@ export interface DadosDocumento {
   cliente_rg: string;
   cliente_cpf: string;
   cliente_endereco: string;
+  /** PJ: representante legal e CPF dele. */
+  representante_nome: string;
+  representante_cpf: string;
   advogado_nome: string;
   advogado_oab: string;
   escritorio_endereco: string;
@@ -62,6 +70,13 @@ export async function carregarDadosIniciais(fichaId: string): Promise<DadosDocum
     .maybeSingle<{ nome_cliente: string; cpf: string | null; area_identificada: string; advogado_id: string | null }>();
   if (error || !ficha) throw new Error("Não foi possível carregar a ficha (ou você não tem acesso a ela).");
 
+  // Cadastro e honorários (v7): silenciosos se a migração ainda não existe.
+  const [{ cadastro }, { contratos }] = await Promise.all([
+    carregarCadastro(fichaId).catch(() => ({ cadastro: null as ClienteCadastro | null })),
+    buscarFinanceiroFicha(fichaId).catch(() => ({ contratos: [] })),
+  ]);
+  const contrato = contratos.find((c) => !c.cancelado && (c.tipo === "honorarios" || c.tipo === "exito")) ?? contratos.find((c) => !c.cancelado);
+
   let advogadoNome = "";
   if (ficha.advogado_id) {
     const { data } = await supabase.from("advogados").select("nome").eq("id", ficha.advogado_id).maybeSingle<{ nome: string }>();
@@ -70,21 +85,28 @@ export async function carregarDadosIniciais(fichaId: string): Promise<DadosDocum
   const area = isAreaJuridica(ficha.area_identificada) ? ficha.area_identificada : "";
   const escritorio = lerDadosEscritorio();
   return {
-    cliente_nome: ficha.nome_cliente,
-    cliente_nacionalidade: "brasileiro(a)",
-    cliente_estado_civil: "",
-    cliente_profissao: "",
-    cliente_rg: "",
-    cliente_cpf: formatarCpf(ficha.cpf ?? ""),
-    cliente_endereco: "",
+    cliente_tipo: cadastro?.tipo_pessoa ?? "pf",
+    cliente_nome: cadastro?.nome ?? ficha.nome_cliente,
+    cliente_nacionalidade: cadastro?.nacionalidade ?? "brasileiro(a)",
+    cliente_estado_civil: cadastro?.estado_civil ?? "",
+    cliente_profissao: cadastro?.profissao ?? "",
+    cliente_rg: cadastro?.rg ?? "",
+    cliente_cpf: cadastro?.documento ? formatarDocumento(cadastro.documento) : formatarCpf(ficha.cpf ?? ""),
+    cliente_endereco: cadastro?.endereco ?? "",
+    representante_nome: cadastro?.representante_nome ?? "",
+    representante_cpf: cadastro?.representante_cpf ? formatarDocumento(cadastro.representante_cpf) : "",
     advogado_nome: advogadoNome,
     advogado_oab: escritorio.advogado_oab ?? "",
     escritorio_endereco: escritorio.escritorio_endereco ?? "",
     area,
-    objeto: area ? `atuação na demanda de Direito ${AREAS_JURIDICAS[area]} relatada pelo(a) contratante` : "",
-    honorarios_fixos: "",
-    honorarios_percentual: "",
-    forma_pagamento: "à vista, na assinatura deste instrumento",
+    objeto: contrato?.descricao
+      ? contrato.descricao
+      : area
+        ? `atuação na demanda de Direito ${AREAS_JURIDICAS[area]} relatada pelo(a) contratante`
+        : "",
+    honorarios_fixos: contrato?.valor_total ? moedaSemSimbolo(contrato.valor_total) : "",
+    honorarios_percentual: contrato?.percentual_exito ? String(contrato.percentual_exito).replace(".", ",") : "",
+    forma_pagamento: (contrato && textoFormaPagamento(contrato)) || "à vista, na assinatura deste instrumento",
     foro: escritorio.foro ?? "",
     cidade: escritorio.cidade ?? "",
     data: new Date().toLocaleDateString("sv-SE"), // yyyy-mm-dd no fuso local
@@ -112,6 +134,15 @@ function dataPorExtenso(iso: string): string {
 }
 
 function qualificacaoCliente(d: DadosDocumento) {
+  if (d.cliente_tipo === "pj") {
+    return `${v(d.cliente_nome, "razão social")}, pessoa jurídica de direito privado, inscrita no CNPJ sob o nº ${v(
+      d.cliente_cpf,
+      "CNPJ",
+    )}, com sede em ${v(d.cliente_endereco, "endereço da sede com CEP")}, neste ato representada por ${v(
+      d.representante_nome,
+      "representante legal",
+    )}, inscrito(a) no CPF sob o nº ${v(d.representante_cpf, "CPF do representante")}`;
+  }
   return `${v(d.cliente_nome, "nome completo")}, ${v(d.cliente_nacionalidade, "nacionalidade")}, ${v(
     d.cliente_estado_civil,
     "estado civil",
@@ -201,6 +232,46 @@ function procuracao(d: DadosDocumento): string {
 ${especiais}
 <p><strong>FINALIDADE:</strong> especialmente para ${v(d.objeto, "finalidade do mandato")}${area}.</p>
 ${rodapeAssinaturas(d, [{ nome: v(d.cliente_nome, "outorgante"), papel: "OUTORGANTE" }], false)}`;
+}
+
+/** Grava a qualificação digitada no gerador no cadastro do cliente (opt-in do usuário). */
+export async function salvarQualificacaoNoCadastro(fichaId: string, d: DadosDocumento): Promise<void> {
+  const pj = d.cliente_tipo === "pj";
+  await salvarCadastro(fichaId, {
+    tipo_pessoa: d.cliente_tipo,
+    nome: d.cliente_nome,
+    documento: soDigitos(d.cliente_cpf) || null,
+    rg: pj ? null : d.cliente_rg,
+    nacionalidade: pj ? null : d.cliente_nacionalidade,
+    estado_civil: pj ? null : d.cliente_estado_civil,
+    profissao: pj ? null : d.cliente_profissao,
+    endereco: d.cliente_endereco,
+    email: null,
+    representante_nome: pj ? d.representante_nome : null,
+    representante_cpf: pj ? soDigitos(d.representante_cpf) || null : null,
+  });
+}
+
+/** Copia o documento formatado (HTML + texto) para colar no Word/Google Docs ou na assinatura eletrônica. */
+export async function copiarFormatado(html: string): Promise<void> {
+  const completo = `<div style="font-family:'Times New Roman',serif;font-size:12pt;line-height:1.5">${html}</div>`;
+  // Texto puro com quebras de parágrafo (o elemento fora da página não tem layout para innerText).
+  const decodificador = document.createElement("textarea");
+  decodificador.innerHTML = html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|h1|h2|div)>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "");
+  const texto = decodificador.value.replace(/\n{3,}/g, "\n\n").trim();
+  if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "text/html": new Blob([completo], { type: "text/html" }),
+        "text/plain": new Blob([texto], { type: "text/plain" }),
+      }),
+    ]);
+    return;
+  }
+  await navigator.clipboard.writeText(texto);
 }
 
 export function gerarDocumentoHtml(modelo: ModeloDocumento, dados: DadosDocumento): string {
