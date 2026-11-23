@@ -68,6 +68,32 @@ export function validarArquivo(arquivo: { type: string; size: number }, nome: st
   return erros;
 }
 
+/**
+ * Tipo real pelo conteúdo (assinatura dos primeiros bytes), não pelo nome nem pelo que o
+ * navegador informa: um .html renomeado para .pdf é recusado. DOCX e XLSX são ZIP (PK..),
+ * então para eles vale o tipo declarado, desde que o conteúdo seja mesmo um ZIP.
+ */
+export function tipoPelaAssinatura(bytes: Uint8Array, declarado: string): string | null {
+  const inicia = (...sig: number[]) => sig.every((b, i) => bytes[i] === b);
+  if (inicia(0x25, 0x50, 0x44, 0x46, 0x2d)) return "application/pdf"; // %PDF-
+  if (inicia(0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (inicia(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+  if (inicia(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+  if (inicia(0x50, 0x4b, 0x03, 0x04)) {
+    const zips = [
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ];
+    return zips.includes(declarado) ? declarado : null;
+  }
+  return null;
+}
+
+async function tipoReal(arquivo: File): Promise<string | null> {
+  const cabecalho = new Uint8Array(await arquivo.slice(0, 16).arrayBuffer());
+  return tipoPelaAssinatura(cabecalho, arquivo.type);
+}
+
 export async function listarDocumentos(fichaId: string): Promise<{ documentos: DocumentoFicha[]; disponivel: boolean }> {
   const { data, error } = await supabase
     .from("fichas_documentos")
@@ -92,9 +118,14 @@ export async function enviarDocumento(
   const problemas = validarArquivo(arquivo, dados.nome);
   if (dados.descricao && contemDocumentoPessoal(dados.descricao)) problemas.push(`Descrição: ${AVISO_DOCUMENTO}`);
   if (problemas.length) throw new Error(problemas.join(" "));
+  // O tipo gravado (e servido no download) é o detectado pelo conteúdo.
+  const tipo = await tipoReal(arquivo);
+  if (!tipo || !TIPOS_ACEITOS[tipo]) {
+    throw new Error("O conteúdo do arquivo não corresponde a PDF, imagem, DOCX ou XLSX. Envio bloqueado por segurança.");
+  }
 
-  const caminho = `${fichaId}/${crypto.randomUUID()}.${TIPOS_ACEITOS[arquivo.type]}`;
-  const envio = await supabase.storage.from(BUCKET_DOCUMENTOS).upload(caminho, arquivo, { contentType: arquivo.type, upsert: false });
+  const caminho = `${fichaId}/${crypto.randomUUID()}.${TIPOS_ACEITOS[tipo]}`;
+  const envio = await supabase.storage.from(BUCKET_DOCUMENTOS).upload(caminho, arquivo, { contentType: tipo, upsert: false });
   if (envio.error) {
     console.error("Erro no upload:", envio.error.message);
     throw new Error("Não foi possível enviar o arquivo. Confira se a migração v7 (bucket documentos-clientes) foi aplicada e se você tem acesso à ficha.");
@@ -109,7 +140,7 @@ export async function enviarDocumento(
       descricao: dados.descricao?.trim() || null,
       caminho,
       tamanho_bytes: arquivo.size,
-      tipo_mime: arquivo.type,
+      tipo_mime: tipo,
     })
     .select(COLUNAS)
     .single<DocumentoFicha>();

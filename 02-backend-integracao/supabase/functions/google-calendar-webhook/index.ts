@@ -13,6 +13,8 @@
  * Secrets: GOOGLE_CHANNEL_TOKEN, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY e,
  * opcionais, N8N_GOOGLE_SYNC_URL + N8N_WEBHOOK_SECRET (para acordar o worker).
  */
+import { bloqueado, ipDe, registrarFalha } from "../_shared/limite-falhas.ts";
+
 function env(key: string): string {
   return Deno.env.get(key)?.trim() || "";
 }
@@ -57,12 +59,15 @@ async function acordarWorker(canalId: string): Promise<void> {
 }
 
 Deno.serve(async (req: Request) => {
+  const ip = ipDe(req);
+  if (bloqueado(ip)) return new Response("Too Many Requests", { status: 429, headers: { "retry-after": "60" } });
   if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
 
   const canalId = (req.headers.get("x-goog-channel-id") || "").slice(0, 200);
   const estado = (req.headers.get("x-goog-resource-state") || "").slice(0, 40);
   const token = req.headers.get("x-goog-channel-token") || "";
   if (!canalId || !estado || !fixedTimeEquals(token, env("GOOGLE_CHANNEL_TOKEN"))) {
+    registrarFalha(ip);
     return new Response("Unauthorized", { status: 403 });
   }
 

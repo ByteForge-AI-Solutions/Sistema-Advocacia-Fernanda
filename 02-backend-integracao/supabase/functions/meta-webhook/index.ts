@@ -11,7 +11,18 @@
  *    supabase functions deploy meta-webhook --no-verify-jwt
  * O POST é protegido por HMAC, o GET pelo token de verificação.
  * Chaves service_role e tokens devem existir apenas como secrets da Edge.
+ * Tentativas com token/assinatura inválidos são limitadas por IP (429).
  */
+import { bloqueado, ipDe, registrarFalha } from "../_shared/limite-falhas.ts";
+
+/** Hosts aceitos para baixar mídia (a URL vem da Graph API; evita SSRF para outros destinos). */
+const HOSTS_MIDIA = [".fbsbx.com", ".fbcdn.net", ".facebook.com", ".whatsapp.net"];
+function hostDeMidiaPermitido(u: string): boolean {
+  try {
+    const url = new URL(u);
+    return url.protocol === "https:" && HOSTS_MIDIA.some((h) => url.hostname.endsWith(h));
+  } catch { return false; }
+}
 function env(key: string): string { return Deno.env.get(key)?.trim() || ""; }
 function fixedTimeEquals(a: string, b: string): boolean {
   if (!a || !b || a.length !== b.length) return false;
@@ -37,7 +48,7 @@ async function transcribeAudio(mediaId: string): Promise<string | null> {
   const meta = await fetch(url, { headers: auth, signal: AbortSignal.timeout(8000) });
   if (!meta.ok) return null;
   const data = await meta.json();
-  if (typeof data?.url !== "string" || !data.url.startsWith("https://")) return null;
+  if (typeof data?.url !== "string" || !hostDeMidiaPermitido(data.url)) return null;
   const audio = await fetch(data.url, { headers: auth, signal: AbortSignal.timeout(12000) });
   if (!audio.ok || Number(audio.headers.get("content-length") || 0) > 20_000_000) return null;
   const blob = await audio.blob();
@@ -97,16 +108,23 @@ async function wakeN8n(telephone: string): Promise<void> {
 }
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
+  const ip = ipDe(req);
+  if (bloqueado(ip)) return new Response("Too Many Requests", { status: 429, headers: { "retry-after": "60" } });
   if (req.method === "GET") {
     const okay = url.searchParams.get("hub.mode") === "subscribe" &&
       fixedTimeEquals(url.searchParams.get("hub.verify_token") || "", env("META_VERIFY_TOKEN"));
-    return okay ? new Response(url.searchParams.get("hub.challenge") || "", { status: 200 })
+    if (!okay) registrarFalha(ip);
+    // O challenge volta como texto puro (nunca HTML) e com tamanho limitado.
+    return okay ? new Response((url.searchParams.get("hub.challenge") || "").slice(0, 200),
+        { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } })
       : new Response("Unauthorized", { status: 403 });
   }
   if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
   const body = new Uint8Array(await req.arrayBuffer());
-  if (body.length > 1_000_000 || !(await validHmac(body, req.headers.get("x-hub-signature-256") || "")))
+  if (body.length > 1_000_000 || !(await validHmac(body, req.headers.get("x-hub-signature-256") || ""))) {
+    registrarFalha(ip);
     return new Response("Unauthorized", { status: 403 });
+  }
   let document: any;
   try { document = JSON.parse(new TextDecoder().decode(body)); }
   catch { return new Response("Invalid JSON", { status: 400 }); }

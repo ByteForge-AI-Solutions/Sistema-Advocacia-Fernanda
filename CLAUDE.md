@@ -72,6 +72,7 @@ Regras de cor, conforme o documento "CRM de leads de anúncio", seção 4:
 - **Estagiário:** vê e edita só as dele e não consegue repassá-las.
 - **Fichas sem responsável** (`advogado_id` NULL): o titular vê as da área dele e o sócio vê todas, pela política `crm fichas sem responsavel`. Quem assume chama a RPC `crm_ficha_assumir`, que também atualiza `ultima_atribuicao`.
 - INSERT e DELETE são exclusivos da `service_role` (bot n8n).
+- **`advogados`:** desde a v8 não é mais legível por qualquer usuário logado. A política em vigor é "advogados: leitura restrita". A seção 5.3 do `schema.sql` mostra a política antiga.
 
 ### `conversas_memoria`
 Memória da conversa do agente no WhatsApp, uma linha por cliente.
@@ -139,6 +140,46 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
      - Funções: `crm_pode_acessar_ficha_id`, `crm_pode_excluir` e `crm_pode_acessar_objeto`.
      - RPC `crm_fin_criar_contrato` e trigger `crm_fin_avancar_funil`.
      - Não toca em funções existentes nem em `pode_acessar_ficha`.
+  8. `20261122_v8_hardening_rls.sql`: remove as duas últimas políticas `USING (true)`.
+     - **`advogados`** (antes, "equipe lê advogados", do `schema.sql`):
+       - cada pessoa lê a própria linha pelo e-mail do JWT, mesmo inativa (o login precisa disso);
+       - a equipe real ativa (advogado, sócio e estagiário) lê a equipe real, via `crm_cargo_atual()`;
+       - contas `desenvolvedor` só leem a si mesmas, e a equipe não as vê.
+     - **`dfu_feriados`:** leitura só para quem tem perfil ativo.
+     - No fim, a migração **avisa** se ainda existir política irrestrita no schema `public`.
+  9. `20261122_v9_security_hardening.sql`: correções da auditoria AppSec.
+     - **Financeiro:** contratos e parcelas passam a ser autorizados pela ficha (`crm_pode_acessar_ficha_id(ficha_id)`). O trigger `crm_fin_contrato_guarda` força `advogado_id` igual ao responsável da ficha, e `crm_fin_acompanhar_ficha` mantém isso na transferência.
+     - **`fichas_clientes`:** UPDATE só nas colunas que o CRM edita (GRANT por coluna). **Coluna nova editável pela tela precisa entrar nesse GRANT**, senão o PostgREST devolve `42501`.
+     - **Estagiário:** não altera valor nem vencimento, não desfaz pagamento, não cancela contrato e não troca a ficha do contrato. Ninguém move uma parcela de contrato.
+     - **Storage:** o nome do objeto tem de ser `<uuid-ficha>/<uuid>.<pdf|jpg|png|webp|docx|xlsx>`. CHECKs de MIME e caminho em `fichas_documentos`.
+     - **Autoria:** `criado_por` de contratos e prazos é forçado pelo JWT.
+     - **Chave anon:** sem nenhum privilégio nas tabelas do CRM.
+  10. `20261122_v10_advisor_funcoes.sql`: avisos do Supabase Security Advisor.
+     - Tira o EXECUTE de PUBLIC, anon e authenticated das 5 funções de gatilho SECURITY DEFINER: `crm_agenda_enfileirar_google`, `crm_fin_acompanhar_ficha`, `crm_fin_avancar_funil`, `crm_fin_contrato_guarda` e `dfu_proteger_agenda`. Gatilho não depende do EXECUTE de quem grava.
+     - Documenta (com COMMENT) as exceções intencionais.
+     - **Toda função de gatilho SECURITY DEFINER nova precisa do mesmo REVOKE.**
+- **Avisos do Security Advisor que são intencionais (não "corrigir"):**
+  - **0029 em RPCs e funções de autorização:** `pode_acessar_ficha`, `advogado_atual_id`, `crm_cargo_atual`, `crm_pode_*`, `crm_titular_da_area`, `crm_atendimento_*`, `crm_indicadores*`, `crm_ficha_assumir` e `dfu_assumir_atendimento`.
+    - As RPCs validam o chamador por dentro.
+    - As funções de autorização são chamadas pelas políticas RLS, que rodam com o papel do usuário: sem EXECUTE para authenticated, o RLS falha para todos.
+    - O teste de RLS confere que a lista não cresce sem aprovação (`PERMITIDAS`).
+  - **0008 (RLS sem política):** em `conversas_memoria`, `dfu_erros`, `dfu_origens`, `dfu_revisoes`, `agenda_google_fila` e `agenda_google_notificacoes`, a regra é negar tudo; só a `service_role` usa essas tabelas.
+- **Teste de invasão do RLS** (`04-banco-dados/tests`, PGlite = Postgres real em memória):
+  - Para rodar: `npm ci && npm test` dentro da pasta.
+  - Aplica `schema.sql` e todas as migrações e simula cada usuário (sócio, titular, estagiária, desenvolvedor e anon) com o JWT, como o PostgREST faz. São 73 verificações, incluindo as regras 0028/0029 do Security Advisor.
+  - **Migração nova:** inclua-a na lista `MIGRACOES` de `aplicar.mjs`.
+  - O `check_integration.py` roda esse teste automaticamente quando `node_modules` existe.
+- **Segurança (skill `.claude/skills/appsec-juridico`):** siga as regras dela em todo código novo.
+  - **Cabeçalhos HTTP** em `03-crm-frontend/next.config.ts`:
+    - CSP sem nonce (o app é estático), com `connect-src` limitado ao Supabase (HTTPS + WSS do Realtime) e `frame-ancestors 'none'`;
+    - também HSTS, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, `Permissions-Policy` e `poweredByHeader: false`.
+  - **Integração nova** (domínio externo de API, fonte ou imagem): inclua o domínio na CSP, senão o navegador bloqueia.
+  - **Cabeçalhos:** também `Cross-Origin-Opener-Policy: same-origin`.
+  - **`search_path`:** as funções `SECURITY DEFINER` usam `SET search_path = ''`, com todos os objetos qualificados (`public.x`). É mais restritivo que `= public`; não troque.
+  - **Logs** (`src/lib/log-seguro.ts`, instalado em `app/layout.tsx`): em produção, todo `console.*` mascara CPF, CNPJ, e-mail, telefone, JWT e chaves, e tira os stack traces.
+  - **Login** (`src/lib/tentativas-login.ts`): espera crescente após 5 falhas neste navegador. A proteção real é o rate limit do Supabase Auth.
+  - **Webhooks** (`02-backend-integracao/supabase/functions/_shared/limite-falhas.ts`): 429 após 20 tentativas inválidas por IP por minuto. O download de mídia do `meta-webhook` só aceita hosts da Meta (anti-SSRF).
+  - **Upload:** o tipo real é conferido pelos primeiros bytes (`tipoPelaAssinatura`), e o tipo gravado é o detectado.
 - **Hashes:** `01-agentes-ia/tests/check_integration.py` confere o SHA-256 de 8 arquivos: `advogados.ts`, `agenda.ts`, `disponibilidade.ts`, `fichas.ts`, `auth-provider.tsx`, `reuniao-modal.tsx`, `app/painel/page.tsx` e `schema.sql`.
   - **Não edite esses arquivos.** Crie funcionalidade em arquivos novos. Se a mudança for inevitável, atualize o hash no teste e avise a equipe do bot.
   - O hash ignora a diferença CRLF/LF.
@@ -190,7 +231,7 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
   - **Registro:** `registrarToque` usa a RPC `crm_followup_registrar` (SECURITY INVOKER), que grava o toque e a próxima ação numa transação só.
   - **Onde aparece:** os toques entram nas "Tarefas do dia" (`montarTarefas`) e na agenda mensal.
   - **Envio:** o envio de follow-up é feito pelo link wa.me (WhatsApp de quem atende), porque a API só aceita texto livre dentro da janela de 24 h.
-- **Acesso aos dados da ficha (v7):** `crm_pode_acessar_ficha_id(ficha)` reproduz a visibilidade de `fichas_clientes`: `pode_acessar_ficha` mais as fichas sem responsável da área. Cadastro, documentos e arquivos usam essa regra. Contratos usam `pode_acessar_ficha(advogado_id)`. Excluir é só para titular, sócio e desenvolvedor (`crm_pode_excluir`); estagiário não exclui.
+- **Acesso aos dados da ficha (v7):** `crm_pode_acessar_ficha_id(ficha)` reproduz a visibilidade de `fichas_clientes`: `pode_acessar_ficha` mais as fichas sem responsável da área. Cadastro, documentos, arquivos e (desde a v9) contratos e parcelas usam essa regra. Excluir, cancelar contrato, alterar valores e desfazer pagamento são só para titular, sócio e desenvolvedor (`crm_pode_excluir`); estagiário não faz nada disso.
 - **Cadastro do cliente (v7):** `clientes_cadastro`, uma linha por ficha, PF ou PJ.
   - `documento` guarda só dígitos (CPF 11 / CNPJ 14, com CHECK).
   - Dados de PJ: razão social, sede e representante.

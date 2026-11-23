@@ -182,6 +182,102 @@ repo=(CLI/'src/lib/repositorio.ts').read_text(encoding='utf-8')
 assert 'createSignedUrl' in repo and 'getPublicUrl' not in repo, 'documentos só por URL assinada'
 assert 'crypto.randomUUID()' in repo, 'nome original fora do caminho do Storage (LGPD)'
 assert 'cpf' not in (CLI/'src/lib/financeiro.ts').read_text(encoding='utf-8').lower(), 'financeiro não lê CPF'
+# v8 (skill appsec-juridico): sem política USING (true) restante; desenvolvedor isolado em advogados.
+v8=(ROOT/'04-banco-dados/migrations/20261122_v8_hardening_rls.sql').read_text(encoding='utf-8')
+assert re.search(r'BEGIN\s*;',v8) and v8.count('$$') % 2 == 0 and v8.rstrip().endswith('COMMIT;')
+assert 'DROP POLICY IF EXISTS "equipe lê advogados" ON public.advogados;' in v8
+assert 'DROP POLICY IF EXISTS "crm feriados leitura" ON public.dfu_feriados;' in v8
+assert "public.crm_cargo_atual() IN ('advogado', 'socio', 'estagiario')" in v8 and "AND cargo IN ('advogado', 'socio', 'estagiario')" in v8
+v8_codigo='\n'.join(l for l in v8.splitlines() if not l.lstrip().startswith('--'))
+assert not re.search(r'USING\s*\(\s*true\s*\)', v8_codigo, re.I) and 'CREATE OR REPLACE FUNCTION public.pode_acessar_ficha' not in v8
+# Toda política USING (true) dos arquivos antigos precisa ter sido derrubada por uma migração posterior.
+for arquivo, politica in (('04-banco-dados/schema.sql','equipe lê advogados'),
+                          ('04-banco-dados/migrations/20261118_v3_crm_modulos.sql','crm feriados leitura')):
+    assert politica in (ROOT/arquivo).read_text(encoding='utf-8') and f'"{politica}"' in v8, politica
+# Cabeçalhos de segurança HTTP no Next.
+cfg=(CLI/'next.config.ts').read_text(encoding='utf-8')
+for h in ('Content-Security-Policy','Strict-Transport-Security','X-Frame-Options','X-Content-Type-Options'):
+    assert h in cfg, f'cabeçalho {h} ausente no next.config'
+assert "frame-ancestors 'none'" in cfg and "object-src 'none'" in cfg
+# service_role nunca no front-end: nem no código, nem no next.config.
+for f in [CLI/'next.config.ts', *(CLI/'src').rglob('*.ts'), *(CLI/'src').rglob('*.tsx')]:
+    assert 'service_role' not in f.read_text(encoding='utf-8').lower(), f'service_role citada em {f.name}'
+
+# ===================== Auditoria AppSec (v9): verificações gerais =====================
+# Lê schema.sql + migrações em ordem, sem comentários.
+MIG=ROOT/'04-banco-dados/migrations'
+# Ordem de aplicação: data e depois número da versão (alfabético poria v10 antes de v8). Bot (sem vN) = v2.
+def ordem_migracao(p):
+    v=re.search(r'_v(\d+)_',p.name)
+    return (p.name[:8], int(v.group(1)) if v else 2)
+sql_arquivos=[ROOT/'04-banco-dados/schema.sql']+sorted(MIG.glob('2026*.sql'), key=ordem_migracao)
+_v10=MIG/'20261122_v10_advisor_funcoes.sql'
+v10_texto=_v10.read_text(encoding='utf-8') if _v10.is_file() else ''
+def sem_comentarios(t): return re.sub(r'--[^\n]*','',t.replace('\r\n','\n'))
+sql_todo='\n'.join(sem_comentarios(p.read_text(encoding='utf-8')) for p in sql_arquivos)
+# 1) Toda tabela criada tem RLS ativado.
+tabelas=set(re.findall(r'CREATE TABLE(?: IF NOT EXISTS)? (?:public\.)?([a-z_]+)\s*\(',sql_todo,re.I))
+com_rls=set(re.findall(r'ALTER TABLE (?:public\.)?([a-z_]+) ENABLE ROW LEVEL SECURITY',sql_todo,re.I))
+assert tabelas and not (tabelas-com_rls), f'tabelas sem RLS: {sorted(tabelas-com_rls)}'
+# 2) Toda função SECURITY DEFINER fixa search_path; 3) as que não são de gatilho negam EXECUTE à anon.
+revokes=re.findall(r'REVOKE[^;]*;',sql_todo)
+for m in re.finditer(r'CREATE OR REPLACE FUNCTION public\.([a-z_0-9]+)\(.*?\)\s*RETURNS\s+(\w+)(.*?)AS \$',sql_todo,re.S):
+    nome,ret,cab=m.group(1),m.group(2).lower(),m.group(3)
+    if 'SECURITY DEFINER' not in cab: continue
+    assert 'SET search_path' in cab, f'SECURITY DEFINER sem search_path: {nome}'
+    if ret!='trigger':
+        assert any(f'public.{nome}(' in r and re.search(r'\banon\b',r.split('FROM')[-1]) for r in revokes), \
+            f'função SECURITY DEFINER executável pela anon: {nome}'
+    else:
+        # Advisor 0028/0029: função de gatilho SECURITY DEFINER sem EXECUTE para anon e authenticated
+        # (REVOKE direto ou na lista do bloco da v10).
+        assert any(f'public.{nome}(' in r and re.search(r'\banon\b.*\bauthenticated\b|\bauthenticated\b.*\banon\b',r.split('FROM')[-1]) for r in revokes) \
+            or f"'public.{nome}()'" in v10_texto, \
+            f'função de gatilho SECURITY DEFINER exposta na API: {nome}'
+# 4) Nenhuma política em vigor com USING (true)/WITH CHECK (true) (a última definição de cada nome vale).
+vigor={}
+for p in sql_arquivos:
+    t=sem_comentarios(p.read_text(encoding='utf-8'))
+    for nome,tab in re.findall(r'DROP POLICY IF EXISTS "([^"]+)" ON ([a-z_.]+);',t): vigor.pop((tab,nome),None)
+    for nome,tab,corpo in re.findall(r'CREATE POLICY "([^"]+)" ON ([a-z_.]+)\s+(.*?);',t,re.S): vigor[(tab,nome)]=corpo
+abertas=[k for k,c in vigor.items() if re.search(r'(USING|CHECK)\s*\(\s*true\s*\)',c,re.I)]
+assert not abertas, f'políticas irrestritas em vigor: {abertas}'
+# 5) Segredos fora do cliente: nada de chave secreta, JWT ou service_role no código do CRM.
+for f in [CLI/'next.config.ts', *(CLI/'src').rglob('*.ts'), *(CLI/'src').rglob('*.tsx'), *(CLI/'public').rglob('*')]:
+    if not f.is_file(): continue
+    t=f.read_text(encoding='utf-8',errors='ignore')
+    assert not re.search(r'sb_secret_|eyJ[A-Za-z0-9_-]{10,}\.eyJ',t), f'possível chave/JWT embutido em {f.name}'
+    for var in re.findall(r'process\.env\.(NEXT_PUBLIC_[A-Z_]+)',t):
+        assert var in ('NEXT_PUBLIC_SUPABASE_URL','NEXT_PUBLIC_SUPABASE_ANON_KEY'), f'variável pública inesperada {var} em {f.name}'
+# 6) Cabeçalhos HTTP completos.
+for h in ('Referrer-Policy','Permissions-Policy','Cross-Origin-Opener-Policy'):
+    assert h in cfg, f'cabeçalho {h} ausente no next.config'
+assert '"DENY"' in cfg and '"nosniff"' in cfg and 'poweredByHeader: false' in cfg
+# 7) Storage: links assinados de no máximo 120 s, nomes anônimos e conteúdo conferido.
+for seg in re.findall(r'createSignedUrl\([^,]+,\s*(\d+)',repo):
+    assert int(seg)<=120, f'URL assinada longa demais: {seg}s'
+assert 'tipoPelaAssinatura' in repo and 'contentType: tipo' in repo, 'upload sem conferência do tipo real'
+v9=(MIG/'20261122_v9_security_hardening.sql').read_text(encoding='utf-8')
+assert '"crm documentos: envio" ON storage.objects' in v9 and r"\.(pdf|jpg|png|webp|docx|xlsx)$'" in v9, 'Storage sem caminho UUID/extensão'
+assert 'REVOKE UPDATE ON public.fichas_clientes FROM authenticated' in v9, 'fichas sem restrição de colunas'
+assert 'crm_pode_acessar_ficha_id(c.ficha_id)' in v9, 'financeiro precisa ser autorizado pela ficha'
+# 8) Webhooks: autenticação + limite de tentativas inválidas.
+FN=ROOT/'02-backend-integracao/supabase/functions'
+for fn in ('meta-webhook','google-calendar-webhook'):
+    t=(FN/fn/'index.ts').read_text(encoding='utf-8')
+    assert 'fixedTimeEquals' in t and 'registrarFalha(ip)' in t and 'bloqueado(ip)' in t, f'{fn} sem auth/limite'
+    assert 'console.' not in t, f'{fn} não deve logar payloads'
+assert 'hostDeMidiaPermitido' in (FN/'meta-webhook/index.ts').read_text(encoding='utf-8'), 'download de mídia sem allowlist (SSRF)'
+# 9) Logs do navegador mascarados em produção.
+assert '<LogSeguro />' in (CLI/'src/app/layout.tsx').read_text(encoding='utf-8')
+# 10) Teste de invasão do RLS num Postgres real (PGlite), se as dependências estiverem instaladas.
+rls_dir=ROOT/'04-banco-dados/tests'
+if (rls_dir/'node_modules/@electric-sql/pglite').is_dir() and shutil.which('node'):
+    r=subprocess.run(['node','testar_rls.mjs'],cwd=rls_dir,capture_output=True,text=True,encoding='utf-8',timeout=600)
+    assert r.returncode==0, 'teste de RLS falhou:\n'+r.stdout[-2000:]+r.stderr[-1000:]
+    rls_msg=r.stdout.strip().splitlines()[-1]
+else:
+    rls_msg='teste de RLS (PGlite) não executado: rode "npm ci" em 04-banco-dados/tests'
 # v3: o item virou "Atendimentos" (inbox bot + humano); o que importa é a rota no menu.
 assert '"/painel/atendimentos"' in (CLI/'src/components/painel/sidebar.tsx').read_text(encoding='utf-8')
 assert 'FilaFichas' in (CLI/'src/app/painel/page.tsx').read_text(encoding='utf-8'), 'Painel original de fichas deve ser preservado'
@@ -196,4 +292,6 @@ assert not list(ROOT.rglob('.env'))
 assert (ROOT/'MANUAL_INSTALACAO_BOT.md').is_file()
 print('APROVADO — 2 workflows JSON, %d scripts JS, %d arquivos críticos preservados,'%(js_count,len(protected)))
 print('           2 gates de segurança para envio, RPC agenda/recuperação, Edge HMAC e UI CRM.')
+print('SEGURANÇA — RLS em %d tabelas, SECURITY DEFINER com search_path, sem USING (true), sem segredos no cliente.'%len(tabelas))
+print('           '+rls_msg)
 print('LIMITAÇÃO — testes estáticos; SQL, n8n, Meta, OpenAI e build Next requerem homologação real.')

@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth-provider";
 import { EsqueciSenhaModal } from "@/components/esqueci-senha-modal";
 import { Marca } from "@/components/marca";
 import { AREAS_JURIDICAS } from "@/lib/advogados";
+import { limparTentativasLogin, registrarFalhaLogin, segundosBloqueado } from "@/lib/tentativas-login";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -25,13 +26,21 @@ export default function LoginPage() {
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    const espera = segundosBloqueado();
+    if (espera > 0) {
+      setErro(`Muitas tentativas sem sucesso. Aguarde ${espera} segundos e tente de novo, ou use "Esqueci minha senha".`);
+      return;
+    }
     setErro(null);
     setEnviando(true);
     const mensagem = await entrar(email, senha);
     setEnviando(false);
     if (mensagem) {
-      setErro(mensagem);
+      const bloqueio = registrarFalhaLogin();
+      setErro(bloqueio > 0 ? `${mensagem} Por segurança, aguarde ${bloqueio} segundos antes de tentar de novo.` : mensagem);
       setSenha("");
+    } else {
+      limparTentativasLogin();
     }
     // Em caso de sucesso, o useEffect acima redireciona para /painel.
   }

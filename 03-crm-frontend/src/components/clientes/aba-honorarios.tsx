@@ -162,7 +162,7 @@ export function AbaHonorarios({
                             <HandCoins className="size-3.5" aria-hidden /> Registrar pagamento
                           </button>
                         )}
-                        {p.pago_em && (
+                        {p.pago_em && podeExcluir && (
                           <button
                             type="button"
                             onClick={() => confirm("Desfazer o registro deste pagamento?") && void acao(() => desfazerPagamento(p.id), "Pagamento desfeito.")}
@@ -181,6 +181,8 @@ export function AbaHonorarios({
             <footer className="mt-3 flex flex-wrap gap-2 text-xs">
               {TIPO_CONTRATO_FUNIL[c.tipo] && !c.cancelado && <span className="text-slate-500">{TIPO_CONTRATO_FUNIL[c.tipo]}</span>}
               <span className="ml-auto flex gap-1">
+                {/* Cancelar, desfazer pagamento e excluir: só titular/sócio (o banco também bloqueia, v9). */}
+                {podeExcluir && (
                 <button
                   type="button"
                   onClick={() =>
@@ -190,6 +192,7 @@ export function AbaHonorarios({
                 >
                   <Ban className="size-3.5" aria-hidden /> {c.cancelado ? "Reativar" : "Cancelar contrato"}
                 </button>
+                )}
                 {podeExcluir && r.pagas === 0 && (
                   <button
                     type="button"
