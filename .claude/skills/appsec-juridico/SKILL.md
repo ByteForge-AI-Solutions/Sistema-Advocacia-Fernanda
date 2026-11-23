@@ -12,7 +12,7 @@ Sempre que criar, revisar ou modificar código neste repositório, aplique rigor
 - Nenhuma política pode usar `USING (true)` de forma irrestrita para usuários autenticados.
 - Contas de desenvolvedor (`is_dev = true` ou equivalente) nunca podem visualizar, listar ou alterar registros de advogados/sócios reais, e vice-versa.
 - Estagiários nunca podem excluir registros financeiros, contratos, documentos ou fichas.
-- Todas as funções `SECURITY DEFINER` no PostgreSQL devem definir explicitamente `SET search_path = public` e validar permissões do chamador para evitar escalonamento de privilégios.
+- Todas as funções `SECURITY DEFINER` no PostgreSQL devem definir explicitamente `SET search_path = ''` (ou `public`) e validar permissões do chamador para evitar escalonamento de privilégios. O padrão deste repositório é `SET search_path = ''`, com todos os objetos qualificados (`public.tabela`, `auth.jwt()`): é o mais restritivo e não deve ser trocado por `public` nas funções existentes.
 
 ## 2. OWASP Top 10, APIs, Server Actions & Validação
 - **Controle de Acesso & Anti-IDOR:** Nunca confie apenas na interface (UI). Valide sessão autenticada, cargo (`role`) e vínculo com o registro no servidor (Server Actions / Route Handlers) antes de qualquer leitura, edição ou exclusão.
