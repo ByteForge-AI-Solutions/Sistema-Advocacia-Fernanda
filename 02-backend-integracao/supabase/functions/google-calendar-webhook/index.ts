@@ -39,6 +39,7 @@ async function registrar(aviso: Record<string, unknown>): Promise<void> {
       Prefer: "return=minimal",
     },
     body: JSON.stringify(aviso),
+    redirect: "error",
     signal: AbortSignal.timeout(8000),
   });
   if (!r.ok) throw new Error(`db_http_${r.status}`);
@@ -51,6 +52,7 @@ async function acordarWorker(canalId: string): Promise<void> {
       method: "POST",
       headers: { "content-type": "application/json", "X-DFU-Internal-Secret": env("N8N_WEBHOOK_SECRET") },
       body: JSON.stringify({ canal_id: canalId }),
+      redirect: "error", // o segredo interno não segue para outro endereço
       signal: AbortSignal.timeout(4500),
     });
   } catch {
@@ -60,15 +62,18 @@ async function acordarWorker(canalId: string): Promise<void> {
 
 Deno.serve(async (req: Request) => {
   const ip = ipDe(req);
-  if (bloqueado(ip)) return new Response("Too Many Requests", { status: 429, headers: { "retry-after": "60" } });
   if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
 
   const canalId = (req.headers.get("x-goog-channel-id") || "").slice(0, 200);
   const estado = (req.headers.get("x-goog-resource-state") || "").slice(0, 40);
   const token = req.headers.get("x-goog-channel-token") || "";
+  // O token é conferido ANTES do limite: notificação autêntica do Google nunca é barrada,
+  // mesmo que alguém forje o IP dele para estourar o limite (negação de serviço).
   if (!canalId || !estado || !fixedTimeEquals(token, env("GOOGLE_CHANNEL_TOKEN"))) {
     registrarFalha(ip);
-    return new Response("Unauthorized", { status: 403 });
+    return bloqueado(ip)
+      ? new Response("Too Many Requests", { status: 429, headers: { "retry-after": "60" } })
+      : new Response("Unauthorized", { status: 403 });
   }
 
   // "sync" é só a confirmação de criação do canal: nada a sincronizar.

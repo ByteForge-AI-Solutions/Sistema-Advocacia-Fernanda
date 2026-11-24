@@ -125,6 +125,15 @@ CREATE TABLE IF NOT EXISTS public.prosp_auditoria (
   created_at      timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS prosp_auditoria_quando_idx ON public.prosp_auditoria (created_at DESC);
+-- Só as chaves que o CRM (exportação) e a Edge (busca/processamento) gravam: o registro não
+-- vira campo de texto livre pela API (LGPD: nada de dado pessoal no log). Auditoria 24/11/2026.
+DO $crm11_auditoria$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'prosp_auditoria_parametros_conhecidos') THEN
+    ALTER TABLE public.prosp_auditoria ADD CONSTRAINT prosp_auditoria_parametros_conhecidos CHECK (
+      parametros - ARRAY['tribunais', 'origem', 'de', 'ate', 'limite', 'valor_minimo', 'com_busca', 'avisos'] = '{}'::jsonb);
+  END IF;
+END $crm11_auditoria$;
 COMMENT ON TABLE public.prosp_auditoria IS
   'Registro das operações de prospecção (LGPD art. 37). Sem UPDATE/DELETE para usuários. Sócio lê tudo; advogado, só o próprio.';
 
@@ -201,6 +210,10 @@ GRANT SELECT ON public.prosp_processos, public.prosp_cnpj_cache, public.prosp_pg
 GRANT INSERT (acao, parametros, qtd_registros) ON public.prosp_auditoria TO authenticated;
 GRANT ALL ON public.prosp_processos, public.prosp_cnpj_cache, public.prosp_pgfn_devedores, public.prosp_auditoria
   TO service_role;
+-- Sequência da identidade da auditoria: o Supabase concede ALL a anon/authenticated em objetos
+-- novos do public. O INSERT por identidade não precisa de privilégio na sequência.
+REVOKE ALL ON SEQUENCE public.prosp_auditoria_id_seq FROM PUBLIC, anon, authenticated;
+GRANT USAGE, SELECT ON SEQUENCE public.prosp_auditoria_id_seq TO service_role;
 
 DROP POLICY IF EXISTS "prosp processos: leitura titular" ON public.prosp_processos;
 CREATE POLICY "prosp processos: leitura titular" ON public.prosp_processos

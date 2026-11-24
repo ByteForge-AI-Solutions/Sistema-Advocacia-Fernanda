@@ -28,6 +28,7 @@ import {
   tribunalDoCnj,
 } from "./regras.ts";
 import type { ComunicacaoDjen, PartesExtraidas, Tribunal } from "./regras.ts";
+import { lerCorpoLimitado } from "../_shared/rede-segura.ts";
 
 export const HOSTS_PERMITIDOS = new Set([
   "api-publica.datajud.cnj.jus.br",
@@ -72,16 +73,17 @@ export async function buscarSeguro(url: string, init: RequestInit = {}, timeoutM
   return await fetch(u, {
     ...init,
     redirect: "error",
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs))), // inteiro: fração lança RangeError
     headers: { accept: "application/json", "user-agent": "crm-prospeccao/1.0", ...(init.headers ?? {}) },
   });
 }
 
-/** Lê JSON com teto de tamanho (resposta inesperadamente grande não derruba a função). */
+/**
+ * Lê JSON com teto de tamanho, em partes: uma resposta gigante (ou com Content-Length falso)
+ * é abortada ao passar do teto, sem carregar tudo na memória.
+ */
 async function jsonLimitado(r: Response, maxBytes = 5_000_000): Promise<unknown> {
-  const texto = await r.text();
-  if (texto.length > maxBytes) throw new Error("resposta_grande_demais");
-  return JSON.parse(texto);
+  return JSON.parse(new TextDecoder().decode(await lerCorpoLimitado(r, maxBytes)));
 }
 
 const esperar = (ms: number) => new Promise((ok) => setTimeout(ok, ms));

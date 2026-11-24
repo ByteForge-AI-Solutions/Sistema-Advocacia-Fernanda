@@ -231,12 +231,21 @@ for (const [sql, desc] of [
   ok(/permission denied/i.test((await como("fernanda", sql)).erro ?? ""), `Sócia não consegue ${desc} pela API (só a service_role)`);
 }
 ok(/permission denied/i.test((await como("caio", "SELECT prosp_cnpjs_para_enriquecer(10)")).erro ?? ""), "authenticated não executa a fila interna de enriquecimento");
+const seqPriv = (await db.query(`SELECT has_sequence_privilege('anon', 'public.prosp_auditoria_id_seq', 'USAGE,SELECT,UPDATE') AS anon,
+  has_sequence_privilege('authenticated', 'public.prosp_auditoria_id_seq', 'USAGE,SELECT,UPDATE') AS auth`)).rows[0];
+ok(!seqPriv.anon && !seqPriv.auth, "Sequência da auditoria sem privilégio para anon/authenticated (auditoria 24/11)");
+ok(/permission denied/i.test((await como("caio", "SELECT nextval('public.prosp_auditoria_id_seq')")).erro ?? ""), "Advogado não mexe na sequência da auditoria");
 const exp = await como("caio", "INSERT INTO prosp_auditoria (acao, parametros, qtd_registros) VALUES ('exportacao', '{\"tribunais\":[\"TRF3\"]}', 3) RETURNING advogado_id");
 ok(exp.erro === null && exp.rows[0]?.advogado_id === adv.caio, `Advogado registra a própria exportação (autoria pelo JWT)${exp.erro ? " — " + exp.erro : ""}`);
 ok((await como("caio", "INSERT INTO prosp_auditoria (advogado_id, acao, qtd_registros) VALUES ($1, 'exportacao', 1)", [adv.kayo])).erro !== null, "Advogado não forja exportação em nome de outro");
+ok((await como("caio", `INSERT INTO prosp_auditoria (acao, parametros, qtd_registros) VALUES ('exportacao', '{"obs":"52998224725"}', 1)`)).erro !== null,
+  "Auditoria não aceita chave livre em parametros (sem texto livre/dado pessoal no log)");
+const expCompleta = await como("caio", `INSERT INTO prosp_auditoria (acao, parametros, qtd_registros) VALUES ('exportacao',
+  '{"tribunais":["TRF1"],"origem":"todas","de":null,"ate":null,"valor_minimo":100000,"com_busca":false}', 2) RETURNING id`);
+ok(expCompleta.erro === null, `Exportação com os parâmetros reais do CRM é aceita${expCompleta.erro ? " — " + expCompleta.erro : ""}`);
 ok((await como("caio", "INSERT INTO prosp_auditoria (acao, qtd_registros) VALUES ('busca', 1)")).erro !== null, "Advogado não forja registro de busca (só a Edge)");
 ok((await como("ana", "INSERT INTO prosp_auditoria (acao, qtd_registros) VALUES ('exportacao', 1)")).erro !== null, "Estagiária não registra exportação");
-ok((await como("kayo", "SELECT id FROM prosp_auditoria")).rows.length === 0 && (await como("fernanda", "SELECT id FROM prosp_auditoria")).rows.length === 1,
+ok((await como("kayo", "SELECT id FROM prosp_auditoria")).rows.length === 0 && (await como("fernanda", "SELECT id FROM prosp_auditoria")).rows.length === 2,
   "Auditoria: sócia vê todas; outro advogado não vê a exportação do colega");
 const svc = await db.transaction(async (tx) => {
   await tx.exec("SET LOCAL ROLE service_role");

@@ -166,6 +166,7 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
      - **Reaplicável:** rodar o arquivo de novo recria a view e as funções sem mexer nos dados.
      - **Acesso:** leitura só para `crm_cargo_atual() IN ('advogado', 'socio')`; estagiário, desenvolvedor e anon não veem nada. Escrita só da `service_role`; o CRM só insere `exportacao` na auditoria (autoria pelo JWT).
      - Sem função SECURITY DEFINER nova. `prosp_cnpjs_para_enriquecer` é só da `service_role`.
+     - **Auditoria (24/11/2026):** a sequência `prosp_auditoria_id_seq` não tem privilégio para anon/authenticated, e `parametros` só aceita as chaves conhecidas (CHECK `prosp_auditoria_parametros_conhecidos`). Chave nova gravada pela Edge ou pelo CRM precisa entrar nessa lista.
 - **Prospecção (v11), Edge Function `02-backend-integracao/supabase/functions/prospeccao-execucoes`:**
   - `verify_jwt = true`; o cargo é conferido de novo dentro dela (RPC `crm_cargo_atual` com o JWT do usuário). 6 chamadas por minuto por usuário (as recusadas não contam; o 429 traz `aguardeSegundos`).
   - Adapters em `fontes.ts` (interfaces `FonteProcessos`, `FontePartes`, `FonteContatoCnpj`): DataJud, DJEN, minhareceita.org → BrasilAPI → CNPJ.ws. Provedor pago futuro = adapter novo + host em `HOSTS_PERMITIDOS`.
@@ -179,7 +180,11 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
     - os processos são reservados (`proxima_tentativa_em` + 3 min) antes da consulta ao DJEN, e os não consultados voltam para a fila no fim;
     - fonte fora do ar ou no limite reagenda em 15 min **sem gastar tentativa**; só resposta fora do padrão vira `erro`.
   - Orçamento de 90 s por chamada; toda chamada externa usa `tempoRestante` para não passar do limite do gateway.
-  - Testes sem rede: `node --test .../regras.test.ts .../fontes.test.ts` (`fontes.test.ts` simula o `fetch`). O `check_integration.py` roda os dois.
+  - Testes sem rede (41 no total; o `check_integration.py` roda todos):
+    - `prospeccao-execucoes/regras.test.ts` e `fontes.test.ts` (`fetch` simulado);
+    - `_shared/seguranca-edge.test.ts`: chama o handler real das 3 Edge Functions (Deno simulado) e testa HMAC, token, JWT/cargo, limites, CORS, redirects e vazamento de detalhes;
+    - `03-crm-frontend/tests/csv-prospeccao.test.mjs`: colunas e CSV injection (funções puras em `src/lib/csv-prospeccao.ts`).
+  - Prazo das chamadas externas em **ms inteiros** (`tempoRestante`): `AbortSignal.timeout` com fração lança `RangeError`, e antes isso virava "sobrecarga" calada na busca com vários tribunais.
   - Secrets: `DATAJUD_API_KEY` e `CRM_ORIGENS` (CORS). Importador da PGFN: `02-backend-integracao/scripts/importar-pgfn.mjs` (roda local, com `service_role` só por variável de ambiente).
 - **Avisos do Security Advisor que são intencionais (não "corrigir"):**
   - **0029 em RPCs e funções de autorização:** `pode_acessar_ficha`, `advogado_atual_id`, `crm_cargo_atual`, `crm_pode_*`, `crm_titular_da_area`, `crm_atendimento_*`, `crm_indicadores*`, `crm_ficha_assumir` e `dfu_assumir_atendimento`.
@@ -189,7 +194,7 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
   - **0008 (RLS sem política):** em `conversas_memoria`, `dfu_erros`, `dfu_origens`, `dfu_revisoes`, `agenda_google_fila` e `agenda_google_notificacoes`, a regra é negar tudo; só a `service_role` usa essas tabelas.
 - **Teste de invasão do RLS** (`04-banco-dados/tests`, PGlite = Postgres real em memória):
   - Para rodar: `npm ci && npm test` dentro da pasta. O script usa `--liftoff-only --single-threaded` porque, com pouca RAM livre, o PGlite não consegue alocar memória para o WebAssembly.
-  - Aplica `schema.sql` e todas as migrações e simula cada usuário (sócio, titular, estagiária, desenvolvedor e anon) com o JWT, como o PostgREST faz. São 116 verificações (34 da prospecção v11 e 9 de compatibilidade com o bot DFU V2, que roda o fluxo do n8n inteiro como `service_role`), incluindo as regras 0028/0029 do Security Advisor.
+  - Aplica `schema.sql` e todas as migrações e simula cada usuário (sócio, titular, estagiária, desenvolvedor e anon) com o JWT, como o PostgREST faz. São 120 verificações (38 da prospecção v11 e 9 de compatibilidade com o bot DFU V2, que roda o fluxo do n8n inteiro como `service_role`), incluindo as regras 0028/0029 do Security Advisor.
   - **Migração nova:** inclua-a na lista `MIGRACOES` de `aplicar.mjs`.
   - O `check_integration.py` roda esse teste automaticamente quando `node_modules` existe.
 - **Segurança (skill `.claude/skills/appsec-juridico`):** siga as regras dela em todo código novo.
@@ -202,6 +207,10 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
   - **Logs** (`src/lib/log-seguro.ts`, instalado em `app/layout.tsx`): em produção, todo `console.*` mascara CPF, CNPJ, e-mail, telefone, JWT e chaves, e tira os stack traces.
   - **Login** (`src/lib/tentativas-login.ts`): espera crescente após 5 falhas neste navegador. A proteção real é o rate limit do Supabase Auth.
   - **Webhooks** (`02-backend-integracao/supabase/functions/_shared/limite-falhas.ts`): 429 após 20 tentativas inválidas por IP por minuto. O download de mídia do `meta-webhook` só aceita hosts da Meta (anti-SSRF).
+    - **Requisição autêntica nunca é barrada pelo IP:** a assinatura, o token ou a sessão é conferido ANTES de `bloqueado(ip)`. Antes, um atacante que forjasse o IP da Meta no `X-Forwarded-For` bloqueava os webhooks legítimos (DoS). O `check_integration.py` reprova `if (bloqueado(ip)) return` antes da autenticação.
+    - O IP vem de `cf-connecting-ip`/`x-real-ip` antes do `X-Forwarded-For`, e o mapa tem teto de 10 mil entradas.
+    - `_shared/rede-segura.ts`: `buscarComRedirecionamentoControlado` (mídia da Meta: cada salto conferido na allowlist, o token não sai dela), `lerCorpoLimitado` (aborta corpo grande sem carregar tudo) e `corpoGrandeDemais` (413 pelo Content-Length).
+    - **Toda chamada de saída das Edge Functions usa `redirect: "error"`** (ou o redirecionamento controlado); o teste de integração confere.
   - **Upload:** o tipo real é conferido pelos primeiros bytes (`tipoPelaAssinatura`), e o tipo gravado é o detectado.
 - **Hashes:** `01-agentes-ia/tests/check_integration.py` confere o SHA-256 de 8 arquivos: `advogados.ts`, `agenda.ts`, `disponibilidade.ts`, `fichas.ts`, `auth-provider.tsx`, `reuniao-modal.tsx`, `app/painel/page.tsx` e `schema.sql`.
   - **Não edite esses arquivos.** Crie funcionalidade em arquivos novos. Se a mudança for inevitável, atualize o hash no teste e avise a equipe do bot.
@@ -368,7 +377,7 @@ Organização:
   - `ehTitular`, `ehSocio` e `rotuloMembro` são auxiliares.
   - `Ficha`, `EventoAgenda` e `PrazoNaTela` têm `responsavel`, preenchido quando o responsável não é o usuário, e `estagiario`. Na tela, os dois viram `VinculoBadge`.
 - `src/components/painel/sidebar.tsx`: menu lateral (desktop) e abas no topo (mobile). Para adicionar uma página, inclua o item na seção adequada de `SECOES`; `cargos` restringe o item a alguns cargos.
-- `src/app/painel/prospeccao/page.tsx` + `src/lib/prospeccao.ts` (v11): prospecção de execuções fiscais, só para sócios e titulares. Filtros (tribunal, origem, período, valor mínimo, busca), botões que chamam a Edge Function e "Exportar CSV" (colunas fixas em `COLUNAS_CSV`, separador `;`, proteção contra injeção de fórmula, até 5.000 linhas, registrado em `prosp_auditoria`).
+- `src/app/painel/prospeccao/page.tsx` + `src/lib/prospeccao.ts` + `src/lib/csv-prospeccao.ts` (v11): prospecção de execuções fiscais, só para sócios e titulares. Filtros (tribunal, origem, período, valor mínimo, busca), botões que chamam a Edge Function e "Exportar CSV" (colunas fixas em `COLUNAS_CSV`, separador `;`, proteção contra injeção de fórmula, até 5.000 linhas, registrado em `prosp_auditoria`).
 - `src/app/login`: tela de login. `src/app/redefinir-senha`: destino do link de recuperação (`updateUser({ password })`).
 - `src/app/painel/layout.tsx`: protege todas as rotas `/painel/*` (manda para `/login` sem sessão) e renderiza a Sidebar. As páginas internas podem assumir que `useAuth().perfil` existe.
 - `src/app/painel/page.tsx`: fila de fichas. `src/app/painel/agenda/page.tsx`: agenda de reuniões em cartões, agrupada por dia, com filtro Próximos/Todos e o botão "Nova reunião". Clicar num cartão abre a edição.

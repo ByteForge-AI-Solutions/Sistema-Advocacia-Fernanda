@@ -277,9 +277,14 @@ export function classificarRespostaDataJud(status: number, corpo: unknown): Resp
   return "ok";
 }
 
-/** Tempo de espera para uma chamada externa que não pode passar do prazo da execução. */
+/**
+ * Tempo de espera (ms INTEIROS) para uma chamada externa que não pode passar do prazo da
+ * execução. AbortSignal.timeout recusa fração (RangeError no Node), e o prazo de cada
+ * tribunal vem de uma divisão: sem o arredondamento, a busca falhava calada como "sobrecarga".
+ */
 export function tempoRestante(prazoFinal: number, maximoMs: number, minimoMs = 3_000, agora = Date.now()): number {
-  return Math.max(minimoMs, Math.min(maximoMs, prazoFinal - agora));
+  const ms = Math.floor(Math.min(maximoMs, prazoFinal - agora));
+  return Number.isFinite(ms) ? Math.max(minimoMs, ms) : minimoMs;
 }
 
 // ---------------------------------------------------------------- contato (base CNPJ)

@@ -11,9 +11,15 @@
  *    supabase functions deploy meta-webhook --no-verify-jwt
  * O POST é protegido por HMAC, o GET pelo token de verificação.
  * Chaves service_role e tokens devem existir apenas como secrets da Edge.
- * Tentativas com token/assinatura inválidos são limitadas por IP (429).
+ * Tentativas com token/assinatura inválidos são limitadas por IP (429). Requisição com
+ * assinatura VÁLIDA nunca é barrada pelo limite (um IP forjado não bloqueia a Meta).
+ * Nenhuma chamada de saída segue redirecionamento livre: a mídia só segue para hosts da Meta.
  */
 import { bloqueado, ipDe, registrarFalha } from "../_shared/limite-falhas.ts";
+import { buscarComRedirecionamentoControlado, corpoGrandeDemais, lerCorpoLimitado } from "../_shared/rede-segura.ts";
+
+const MAX_CORPO = 1_000_000;
+const MAX_AUDIO = 20_000_000;
 
 /** Hosts aceitos para baixar mídia (a URL vem da Graph API; evita SSRF para outros destinos). */
 const HOSTS_MIDIA = [".fbsbx.com", ".fbcdn.net", ".facebook.com", ".whatsapp.net"];
@@ -33,7 +39,7 @@ function fixedTimeEquals(a: string, b: string): boolean {
 function toHex(b: Uint8Array): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
-async function validHmac(body: Uint8Array, header: string): Promise<boolean> {
+async function validHmac(body: Uint8Array<ArrayBuffer>, header: string): Promise<boolean> {
   if (!header.startsWith("sha256=") || !env("META_APP_SECRET")) return false;
   const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(env("META_APP_SECRET")),
     { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -45,20 +51,22 @@ async function transcribeAudio(mediaId: string): Promise<string | null> {
   const version = env("META_GRAPH_VERSION") || "v23.0";
   const url = `https://graph.facebook.com/${version}/${encodeURIComponent(mediaId)}`;
   const auth = { Authorization: `Bearer ${env("META_ACCESS_TOKEN")}` };
-  const meta = await fetch(url, { headers: auth, signal: AbortSignal.timeout(8000) });
+  const meta = await fetch(url, { headers: auth, redirect: "error", signal: AbortSignal.timeout(8000) });
   if (!meta.ok) return null;
   const data = await meta.json();
   if (typeof data?.url !== "string" || !hostDeMidiaPermitido(data.url)) return null;
-  const audio = await fetch(data.url, { headers: auth, signal: AbortSignal.timeout(12000) });
-  if (!audio.ok || Number(audio.headers.get("content-length") || 0) > 20_000_000) return null;
-  const blob = await audio.blob();
-  if (blob.size > 20_000_000) return null;
+  // Cada redirecionamento é conferido: o token da Meta nunca vai para host fora da lista.
+  const audio = await buscarComRedirecionamentoControlado(data.url,
+    { headers: auth, signal: AbortSignal.timeout(12000) }, hostDeMidiaPermitido);
+  if (!audio.ok) return null;
+  const bytes = await lerCorpoLimitado(audio, MAX_AUDIO);
+  const tipo = (audio.headers.get("content-type") || "audio/ogg").split(";")[0].trim().slice(0, 60);
   const form = new FormData();
   form.append("model", "gpt-4o-mini-transcribe");
-  form.append("file", new File([blob], "whatsapp-audio.ogg", { type: blob.type || "audio/ogg" }));
+  form.append("file", new File([bytes], "whatsapp-audio.ogg", { type: /^audio\/[a-z0-9.+-]+$/i.test(tipo) ? tipo : "audio/ogg" }));
   const r = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST", headers: { Authorization: `Bearer ${env("OPENAI_API_KEY")}` },
-    body: form, signal: AbortSignal.timeout(18000)
+    body: form, redirect: "error", signal: AbortSignal.timeout(18000)
   });
   if (!r.ok) return null;
   const j = await r.json();
@@ -90,7 +98,7 @@ async function persist(payload: Record<string, string>): Promise<any> {
   const r = await fetch(`${url.replace(/\/$/, "")}/rest/v1/rpc/dfu_receber`, {
     method: "POST",
     headers: { "apikey": secret, "Authorization": `Bearer ${secret}`, "content-type": "application/json" },
-    body: JSON.stringify(payload), signal: AbortSignal.timeout(10000)
+    body: JSON.stringify(payload), redirect: "error", signal: AbortSignal.timeout(10000)
   });
   if (!r.ok) throw new Error(`db_http_${r.status}`);
   return await r.json();
@@ -102,6 +110,7 @@ async function wakeN8n(telephone: string): Promise<void> {
       method: "POST",
       headers: { "content-type": "application/json", "X-DFU-Internal-Secret": env("N8N_WEBHOOK_SECRET") },
       body: JSON.stringify({ telefone: telephone, processar_ia: true }),
+      redirect: "error", // o segredo interno não segue para outro endereço
       signal: AbortSignal.timeout(4500)
     });
   } catch { /* O DB ja confirmou a entrada; a recuperacao periodica assume. */ }
@@ -109,22 +118,28 @@ async function wakeN8n(telephone: string): Promise<void> {
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const ip = ipDe(req);
-  if (bloqueado(ip)) return new Response("Too Many Requests", { status: 429, headers: { "retry-after": "60" } });
+  // Inválida: conta a falha e responde 429 se o IP já estourou o limite, senão 403.
+  // Válida: segue SEMPRE (o limite por IP nunca barra a Meta, mesmo com IP forjado por terceiros).
+  const recusar = () => {
+    registrarFalha(ip);
+    return bloqueado(ip)
+      ? new Response("Too Many Requests", { status: 429, headers: { "retry-after": "60" } })
+      : new Response("Unauthorized", { status: 403 });
+  };
   if (req.method === "GET") {
     const okay = url.searchParams.get("hub.mode") === "subscribe" &&
       fixedTimeEquals(url.searchParams.get("hub.verify_token") || "", env("META_VERIFY_TOKEN"));
-    if (!okay) registrarFalha(ip);
+    if (!okay) return recusar();
     // O challenge volta como texto puro (nunca HTML) e com tamanho limitado.
-    return okay ? new Response((url.searchParams.get("hub.challenge") || "").slice(0, 200),
-        { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } })
-      : new Response("Unauthorized", { status: 403 });
+    return new Response((url.searchParams.get("hub.challenge") || "").slice(0, 200),
+      { status: 200, headers: { "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff" } });
   }
   if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
-  const body = new Uint8Array(await req.arrayBuffer());
-  if (body.length > 1_000_000 || !(await validHmac(body, req.headers.get("x-hub-signature-256") || ""))) {
-    registrarFalha(ip);
-    return new Response("Unauthorized", { status: 403 });
-  }
+  if (corpoGrandeDemais(req, MAX_CORPO)) return recusar();
+  let body: Uint8Array<ArrayBuffer>;
+  try { body = await lerCorpoLimitado(new Response(req.body), MAX_CORPO); }
+  catch { return recusar(); }
+  if (!(await validHmac(body, req.headers.get("x-hub-signature-256") || ""))) return recusar();
   let document: any;
   try { document = JSON.parse(new TextDecoder().decode(body)); }
   catch { return new Response("Invalid JSON", { status: 400 }); }

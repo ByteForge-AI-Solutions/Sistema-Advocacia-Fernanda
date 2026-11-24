@@ -27,6 +27,7 @@
  * Respostas de erro nunca trazem detalhes internos; nada de dados de partes em log.
  */
 import { bloqueado, ipDe, registrarFalha } from "../_shared/limite-falhas.ts";
+import { corpoGrandeDemais, lerCorpoLimitado } from "../_shared/rede-segura.ts";
 import { ChaveRecusada, FONTES_CONTATO, FonteIndisponivel, fonteDataJud, fonteDjen } from "./fontes.ts";
 import type { DadosCnpj, FimDaBusca, ProcessoEncontrado } from "./fontes.ts";
 import { classificar, cnpjValido, diasAteNovaTentativa, pareceEmpresarioIndividual, validarPedido } from "./regras.ts";
@@ -49,6 +50,7 @@ const REAGENDAR_FONTE_FORA_MS = 15 * 60_000;
 /** Falhas seguidas de uma fonte antes de parar de insistir nesta execução. */
 const MAX_FALHAS_SEGUIDAS = 3;
 const CHAMADAS_POR_MINUTO = 6;
+const MAX_PEDIDO = 4_096;
 
 function env(chave: string): string {
   return Deno.env.get(chave)?.trim() || "";
@@ -102,6 +104,7 @@ async function db(caminho: string, init: { method?: string; corpo?: unknown; pre
       ...(init.prefer ? { Prefer: init.prefer } : {}),
     },
     body: init.corpo === undefined ? undefined : JSON.stringify(init.corpo),
+    redirect: "error",
     signal: AbortSignal.timeout(15_000),
   });
   if (!r.ok) throw new Error(`db_http_${r.status}`);
@@ -130,6 +133,7 @@ async function identificar(jwt: string): Promise<Usuario | null> {
       method: "POST",
       headers: { apikey: anon, Authorization: `Bearer ${jwt}`, "content-type": "application/json" },
       body: "{}",
+      redirect: "error",
       signal: AbortSignal.timeout(8_000),
     });
   const [rc, ri] = await Promise.all([rpc("crm_cargo_atual"), rpc("advogado_atual_id")]);
@@ -256,7 +260,7 @@ async function buscarDataJud(
       // O tempo que sobra é dividido entre os tribunais que faltam.
       const restantes = pedido.tribunais.length - i;
       const r = await datajud.buscar(
-        { tribunal, de: pedido.de, ate: pedido.ate, limite: pedido.limite, prazoFinal: Date.now() + (fimDaBusca - Date.now()) / restantes },
+        { tribunal, de: pedido.de, ate: pedido.ate, limite: pedido.limite, prazoFinal: Date.now() + Math.floor((fimDaBusca - Date.now()) / restantes) },
         async (lote) => {
           const n = await gravarNovos(lote);
           placar.novos += n;
@@ -477,7 +481,7 @@ async function pendentesNaFila(): Promise<number | null> {
   const chave = env("SUPABASE_SERVICE_ROLE_KEY");
   const r = await fetch(
     `${url.replace(/\/$/, "")}/rest/v1/prosp_processos?select=id&situacao=in.(pendente,erro)&tentativas=lt.${MAX_TENTATIVAS}`,
-    { method: "HEAD", headers: { apikey: chave, Authorization: `Bearer ${chave}`, Prefer: "count=exact" }, signal: AbortSignal.timeout(8_000) },
+    { method: "HEAD", headers: { apikey: chave, Authorization: `Bearer ${chave}`, Prefer: "count=exact" }, redirect: "error", signal: AbortSignal.timeout(8_000) },
   ).catch(() => null);
   const total = r?.headers.get("content-range")?.split("/")[1];
   return total && /^\d+$/.test(total) ? Number(total) : null;
@@ -488,27 +492,35 @@ async function pendentesNaFila(): Promise<number | null> {
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cabecalhosCors(req) });
   const ip = ipDe(req);
-  if (bloqueado(ip)) return responder(req, 429, { erro: "Muitas tentativas. Aguarde um minuto.", aguardeSegundos: 60 }, { "retry-after": "60" });
   if (req.method !== "POST") return responder(req, 405, { erro: "Método não permitido." });
+  if (corpoGrandeDemais(req, MAX_PEDIDO)) return responder(req, 413, { erro: "Pedido grande demais." });
 
+  // Limite por IP só para quem NÃO é sócio/advogado autenticado: um IP forjado no cabeçalho
+  // não consegue barrar um usuário legítimo (ele já tem o limite próprio de 6 por minuto).
+  const recusar = (status: number, erro: string) => {
+    registrarFalha(ip);
+    return bloqueado(ip)
+      ? responder(req, 429, { erro: "Muitas tentativas. Aguarde um minuto.", aguardeSegundos: 60 }, { "retry-after": "60" })
+      : responder(req, status, { erro });
+  };
   const jwt = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
   let usuario: Usuario | null = null;
   try {
-    usuario = jwt ? await identificar(jwt) : null;
+    usuario = jwt && jwt.length < 8_192 ? await identificar(jwt) : null;
   } catch {
     return responder(req, 503, { erro: "Serviço indisponível." });
   }
-  if (!usuario) {
-    registrarFalha(ip);
-    return responder(req, 401, { erro: "Sessão inválida. Entre de novo no CRM." });
-  }
+  if (!usuario) return recusar(401, "Sessão inválida. Entre de novo no CRM.");
   if (usuario.cargo !== "socio" && usuario.cargo !== "advogado") {
-    registrarFalha(ip);
-    return responder(req, 403, { erro: "Disponível apenas para sócios e advogados titulares." });
+    return recusar(403, "Disponível apenas para sócios e advogados titulares.");
   }
 
-  const bruto = await req.text();
-  if (bruto.length > 4_096) return responder(req, 413, { erro: "Pedido grande demais." });
+  let bruto: string;
+  try {
+    bruto = new TextDecoder().decode(await lerCorpoLimitado(new Response(req.body), MAX_PEDIDO));
+  } catch {
+    return responder(req, 413, { erro: "Pedido grande demais." });
+  }
   let corpo: unknown;
   try {
     corpo = JSON.parse(bruto);

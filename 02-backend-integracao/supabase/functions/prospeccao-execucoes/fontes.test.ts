@@ -59,6 +59,23 @@ test("prazo: chamada externa nunca passa do fim da execução", () => {
   assert.equal(tempoRestante(1_050_000, 20_000, 3_000, 1_000_000), 20_000);
   assert.equal(tempoRestante(1_008_000, 20_000, 3_000, 1_000_000), 8_000);
   assert.equal(tempoRestante(995_000, 20_000, 3_000, 1_000_000), 3_000);
+  // Regressão (auditoria 24/11/2026): prazo fracionário fazia AbortSignal.timeout lançar RangeError.
+  assert.equal(tempoRestante(1_028_982.5, 60_000, 5_000, 1_000_000), 28_982);
+  assert.equal(tempoRestante(Number.NaN, 60_000, 5_000, 1_000_000), 5_000);
+});
+
+test("DataJud: prazo fracionário (divisão entre tribunais) não derruba a busca", async () => {
+  const f = simularFetch([json(401, { error: "unauthorized" })]);
+  try {
+    await assert.rejects(
+      fonteDataJud("chave").buscar({ tribunal: "TRF1", de: "2026-11-01", ate: "2026-11-02", limite: 10, prazoFinal: Date.now() + 28_982.5 }, async () => {}),
+      ChaveRecusada,
+      "chegou ao DataJud (antes, o RangeError era engolido e virava 'sobrecarga')",
+    );
+    assert.equal(f.chamadas.length, 1);
+  } finally {
+    f.restaurar();
+  }
 });
 
 const N1 = cnj("5001234", "2026", "03", "6182");

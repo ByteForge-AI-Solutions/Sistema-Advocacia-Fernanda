@@ -268,6 +268,17 @@ for fn in ('meta-webhook','google-calendar-webhook'):
     assert 'fixedTimeEquals' in t and 'registrarFalha(ip)' in t and 'bloqueado(ip)' in t, f'{fn} sem auth/limite'
     assert 'console.' not in t, f'{fn} não deve logar payloads'
 assert 'hostDeMidiaPermitido' in (FN/'meta-webhook/index.ts').read_text(encoding='utf-8'), 'download de mídia sem allowlist (SSRF)'
+# Auditoria 24/11/2026: IP forjado não bloqueia tráfego autêntico; nenhuma saída segue redirect livre.
+lim=(FN/'_shared/limite-falhas.ts').read_text(encoding='utf-8')
+assert 'cf-connecting-ip' in lim and 'MAX_ENTRADAS' in lim, 'limite por IP sem cabeçalho da borda ou sem teto de memória'
+for fn in ('meta-webhook','google-calendar-webhook','prospeccao-execucoes'):
+    t_fn=(FN/fn/'index.ts').read_text(encoding='utf-8')
+    # Nenhuma função barra pelo IP antes de autenticar (o bloqueio só vale para requisição inválida).
+    assert not re.search(r'if \(bloqueado\(ip\)\) return', t_fn), f'{fn}: bloqueio por IP antes da autenticação (DoS com IP forjado)'
+    n_fetch=len(re.findall(r'(?<![\w.])fetch\(', t_fn)); n_redir=t_fn.count('redirect: "error"')
+    assert n_redir>=n_fetch, f'{fn}: {n_fetch} fetch e só {n_redir} com redirect: "error"'
+meta_src=(FN/'meta-webhook/index.ts').read_text(encoding='utf-8')
+assert 'buscarComRedirecionamentoControlado(data.url' in meta_src and 'lerCorpoLimitado(' in meta_src, 'mídia: redirect/tamanho sem controle'
 # 9) Logs do navegador mascarados em produção.
 assert '<LogSeguro />' in (CLI/'src/app/layout.tsx').read_text(encoding='utf-8')
 # 10) Teste de invasão do RLS num Postgres real (PGlite), se as dependências estiverem instaladas.
@@ -317,9 +328,11 @@ assert v11_codigo.count("!~ '([0-9]{3}") == 2 and 'encontrado IS NOT FALSE' in v
 cfg_supa=(ROOT/'02-backend-integracao/supabase/config.toml').read_text(encoding='utf-8')
 assert re.search(r'\[functions\.prospeccao-execucoes\]\s*\nverify_jwt = true', cfg_supa), 'prospeccao-execucoes precisa de JWT'
 if shutil.which('node'):
-    r=subprocess.run(['node','--test',str(PE/'regras.test.ts'),str(PE/'fontes.test.ts')],capture_output=True,text=True,encoding='utf-8',timeout=300)
-    assert r.returncode==0, 'testes da Edge de prospecção falharam:\n'+r.stdout[-2000:]+r.stderr[-1000:]
-prosp=(CLI/'src/lib/prospeccao.ts').read_text(encoding='utf-8')
+    testes_node=[str(PE/'regras.test.ts'),str(PE/'fontes.test.ts'),str(FN/'_shared/seguranca-edge.test.ts'),str(CLI/'tests/csv-prospeccao.test.mjs')]
+    r=subprocess.run(['node','--test',*testes_node],capture_output=True,text=True,encoding='utf-8',timeout=300)
+    assert r.returncode==0, 'testes das Edge Functions/CSV falharam:\n'+r.stdout[-2000:]+r.stderr[-1000:]
+    edge_msg=[l for l in r.stdout.splitlines() if l.startswith('ℹ pass')]
+prosp=(CLI/'src/lib/prospeccao.ts').read_text(encoding='utf-8')+(CLI/'src/lib/csv-prospeccao.ts').read_text(encoding='utf-8')
 colunas=re.search(r'export const COLUNAS_CSV = \[(.*?)\] as const', prosp, re.S).group(1)
 assert re.findall(r'"([^"]+)"', colunas)==['CPF/CNPJ','nome','data da distribuição','polo ativo','número do processo',
     'tribunal','valor da causa','classe','telefone','e-mail'], 'colunas do CSV diferentes das pedidas'
@@ -346,4 +359,5 @@ print('APROVADO — 2 workflows JSON, %d scripts JS, %d arquivos críticos prese
 print('           2 gates de segurança para envio, RPC agenda/recuperação, Edge HMAC e UI CRM.')
 print('SEGURANÇA — RLS em %d tabelas, SECURITY DEFINER com search_path, sem USING (true), sem segredos no cliente.'%len(tabelas))
 print('           '+rls_msg)
+print('           testes Edge/CSV (node --test): '+(globals().get('edge_msg') or ['não executados (node ausente)'])[0].replace('ℹ ',''))
 print('LIMITAÇÃO — testes estáticos; SQL, n8n, Meta, OpenAI e build Next requerem homologação real.')

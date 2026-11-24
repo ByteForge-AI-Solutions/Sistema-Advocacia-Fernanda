@@ -230,67 +230,8 @@ export function processarFila() {
 }
 
 // ---------------------------------------------------------------- CSV
-
-/** Colunas pedidas pelos advogados, nesta ordem e com estes nomes. */
-export const COLUNAS_CSV = [
-  "CPF/CNPJ",
-  "nome",
-  "data da distribuição",
-  "polo ativo",
-  "número do processo",
-  "tribunal",
-  "valor da causa",
-  "classe",
-  "telefone",
-  "e-mail",
-] as const;
-/** Separador ";" e decimal com vírgula: abre direto no Excel em português. */
-const SEPARADOR = ";";
-
-export function formatarCnpj(d: string): string {
-  return /^\d{14}$/.test(d) ? d.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5") : d;
-}
-export function formatarCnj(d: string | null): string {
-  return d && /^\d{20}$/.test(d) ? d.replace(/^(\d{7})(\d{2})(\d{4})(\d)(\d{2})(\d{4})$/, "$1-$2.$3.$4.$5.$6") : (d ?? "");
-}
-export function formatarData(iso: string | null): string {
-  return iso && /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : "";
-}
-
-/**
- * Anti "CSV injection" (OWASP): célula que começa com = + - @ TAB ou CR vira texto no
- * Excel/Sheets (prefixo '), senão o nome de uma empresa poderia virar fórmula.
- */
-export function neutralizarFormula(valor: string): string {
-  return /^[=+\-@\t\r]/.test(valor) ? `'${valor}` : valor;
-}
-
-function celula(valor: string): string {
-  const v = neutralizarFormula(valor.replace(/[\r\n]+/g, " ").trim());
-  return /[";\n]/.test(v) || v !== valor ? `"${v.replace(/"/g, '""')}"` : v;
-}
-
-export function gerarCsv(linhas: Oportunidade[]): string {
-  const valor = (n: number) => n.toFixed(2).replace(".", ",");
-  const corpo = linhas.map((o) =>
-    [
-      formatarCnpj(o.cnpj),
-      o.nome ?? "",
-      formatarData(o.data_distribuicao),
-      o.polo_ativo ?? "",
-      formatarCnj(o.numero_processo),
-      o.tribunal ?? "",
-      valor(o.valor_causa),
-      o.classe ?? "",
-      o.telefone ?? "",
-      o.email ?? "",
-    ]
-      .map(celula)
-      .join(SEPARADOR),
-  );
-  // BOM UTF-8: o Excel reconhece acentos; CRLF é o fim de linha do RFC 4180.
-  return "﻿" + [COLUNAS_CSV.join(SEPARADOR), ...corpo].join("\r\n") + "\r\n";
-}
+// Funções puras em csv-prospeccao.ts (testadas sem navegador); reexportadas aqui para a tela.
+export { COLUNAS_CSV, formatarCnj, formatarCnpj, formatarData, gerarCsv, neutralizarFormula } from "@/lib/csv-prospeccao";
 
 /** Carrega todas as linhas do filtro (até MAX_EXPORTACAO), em páginas. */
 export async function carregarParaExportar(f: FiltrosProspeccao): Promise<{ linhas: Oportunidade[]; cortado: boolean }> {
