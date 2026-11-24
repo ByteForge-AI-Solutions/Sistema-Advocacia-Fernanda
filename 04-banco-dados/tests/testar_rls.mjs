@@ -178,6 +178,131 @@ for (const fn of ["crm_agenda_enfileirar_google", "crm_fin_acompanhar_ficha", "c
   ok(/permission denied/i.test((await como("caio", `SELECT public.${fn}()`)).erro ?? ""), `authenticated não executa ${fn} pela API`);
 }
 
+console.log("\n8c. Prospecção de execuções fiscais (v11): só sócio e advogado; escrita só da service_role");
+// Dados fictícios: CNPJ de exemplo de documentação e números CNJ inventados.
+await db.exec(`
+  INSERT INTO prosp_processos (numero_cnj, tribunal, data_distribuicao, polo_ativo, polo_ativo_fazenda, executado_nome, cnpj, situacao)
+    VALUES ('50012345520264036182', 'TRF3', '2026-11-10', 'UNIAO FEDERAL - FAZENDA NACIONAL', true, 'EMPRESA EXEMPLO LTDA', '11222333000181', 'qualificado'),
+           ('50000010020264047000', 'TRF4', '2026-11-11', 'CONSELHO REGIONAL', false, NULL, '11444777000161', 'fora_do_filtro');
+  INSERT INTO prosp_cnpj_cache (cnpj, razao_social, natureza_juridica, uf, telefones, email, fonte)
+    VALUES ('11222333000181', 'EMPRESA EXEMPLO LTDA', '2062', 'SP', '{"(11) 3456-7890"}', 'contato@exemplo.com.br', 'minhareceita');
+  INSERT INTO prosp_pgfn_devedores (cnpj, nome, uf, valor_ajuizado, valor_nao_ajuizado, qtd_inscricoes, base_referencia) VALUES
+    ('11222333000181', 'EMPRESA EXEMPLO LTDA', 'SP', 450000, 0, 3, '2026T3'),
+    ('11444777000161', 'OUTRA EMPRESA SA', 'PR', 50000, 20000, 1, '2026T3'),
+    ('12345678000195', 'TERCEIRA EMPRESA LTDA', 'RS', 0, 900000, 2, '2026T3'),
+    ('34028316000103', 'EMPRESA DE MG LTDA', 'MG', 0, 900000, 2, '2026T3'),
+    ('45997418000153', 'FULANO DE TAL 52998224725', 'SP', 0, 300000, 1, '2026T3'),
+    ('19131243000197', 'EMPRESA INEXISTENTE LTDA', 'SC', 0, 200000, 1, '2026T3'),
+    ('27865757000102', 'EMPRESA INDIVIDUAL SEM NOME', 'BA', 0, 300000, 1, '2026T3');
+  INSERT INTO prosp_cnpj_cache (cnpj, encontrado, fonte) VALUES ('19131243000197', false, 'minhareceita');
+  INSERT INTO prosp_cnpj_cache (cnpj, natureza_juridica, fonte) VALUES ('27865757000102', '2135', 'brasilapi');
+`);
+const oportunidades = async (quem) => como(quem, "SELECT origem, cnpj, valor_causa, valor_fonte, tribunal, cadastro_verificado FROM prosp_oportunidades ORDER BY valor_causa DESC");
+const opSocia = await oportunidades("fernanda");
+ok(opSocia.erro === null && opSocia.rows.length === 2, `Sócia vê 2 oportunidades (Fazenda, CNPJ, > R$ 100 mil, TRF1/3/4, sem MEI/duplicata)${opSocia.erro ? " — " + opSocia.erro : opSocia.rows.length !== 2 ? ` — veio ${opSocia.rows.length}` : ""}`);
+ok(opSocia.rows[0]?.valor_causa > opSocia.rows[1]?.valor_causa, "Lista ordenável do maior valor para o menor");
+const doProcesso = opSocia.rows.find((r) => r.origem === "processo");
+ok(doProcesso?.valor_fonte === "pgfn" && Number(doProcesso?.valor_causa) === 450000, "Processo sem valor publicado usa o total ajuizado na PGFN (valor_fonte = pgfn)");
+ok(!opSocia.rows.some((r) => r.cnpj === "11444777000161"), "Fora da lista: polo ativo não é a Fazenda e dívida abaixo de R$ 100 mil");
+ok(!opSocia.rows.some((r) => r.cnpj === "34028316000103"), "Fora da lista: UF fora do TRF1/TRF3/TRF4 (MG é TRF6)");
+ok(!opSocia.rows.some((r) => r.cnpj === "45997418000153"), "Fora da lista: MEI (CPF na razão social), mesmo antes de consultar a Receita");
+ok(!opSocia.rows.some((r) => r.cnpj === "27865757000102"), "Fora da lista: natureza 2135 (empresário individual) vinda da base CNPJ");
+ok(!opSocia.rows.some((r) => r.cnpj === "19131243000197"), "Fora da lista: CNPJ que a Receita não encontrou");
+ok(opSocia.rows.filter((r) => r.cnpj === "11222333000181").length === 1 && doProcesso?.cnpj === "11222333000181",
+  "Sem duplicata: CNPJ com processo não aparece de novo como linha da PGFN");
+ok(doProcesso?.cadastro_verificado === true && opSocia.rows.find((r) => r.origem === "pgfn")?.cadastro_verificado === false,
+  "cadastro_verificado indica o que já passou pela base da Receita");
+ok((await oportunidades("caio")).rows.length === 2, "Advogado titular vê a prospecção");
+for (const quem of ["ana", "dev"]) {
+  ok((await oportunidades(quem)).rows.length === 0, `${quem === "ana" ? "Estagiária" : "Desenvolvedor"} não vê oportunidades (view com security_invoker)`);
+  ok((await como(quem, "SELECT * FROM prosp_cnpj_cache")).rows.length === 0, `${quem === "ana" ? "Estagiária" : "Desenvolvedor"} não lê telefone/e-mail do cache de CNPJ`);
+}
+ok(/permission denied/i.test((await como("anon", "SELECT * FROM prosp_oportunidades")).erro ?? ""), "anon: sem acesso à view de oportunidades");
+ok(/permission denied/i.test((await como("anon", "SELECT * FROM prosp_processos")).erro ?? ""), "anon: sem acesso a prosp_processos");
+for (const [sql, desc] of [
+  ["INSERT INTO prosp_processos (numero_cnj, tribunal) VALUES ('50099995520264036182', 'TRF3')", "criar processo"],
+  ["UPDATE prosp_processos SET cnpj = '12345678000195'", "alterar processo"],
+  ["DELETE FROM prosp_processos", "excluir processo"],
+  ["UPDATE prosp_cnpj_cache SET email = 'x@y.com'", "alterar contato do cache"],
+  ["INSERT INTO prosp_pgfn_devedores (cnpj, nome, base_referencia) VALUES ('12345678000195', 'x', '2026T3')", "gravar na base PGFN"],
+  ["UPDATE prosp_auditoria SET qtd_registros = 0", "alterar auditoria"],
+  ["DELETE FROM prosp_auditoria", "apagar auditoria"],
+]) {
+  ok(/permission denied/i.test((await como("fernanda", sql)).erro ?? ""), `Sócia não consegue ${desc} pela API (só a service_role)`);
+}
+ok(/permission denied/i.test((await como("caio", "SELECT prosp_cnpjs_para_enriquecer(10)")).erro ?? ""), "authenticated não executa a fila interna de enriquecimento");
+const exp = await como("caio", "INSERT INTO prosp_auditoria (acao, parametros, qtd_registros) VALUES ('exportacao', '{\"tribunais\":[\"TRF3\"]}', 3) RETURNING advogado_id");
+ok(exp.erro === null && exp.rows[0]?.advogado_id === adv.caio, `Advogado registra a própria exportação (autoria pelo JWT)${exp.erro ? " — " + exp.erro : ""}`);
+ok((await como("caio", "INSERT INTO prosp_auditoria (advogado_id, acao, qtd_registros) VALUES ($1, 'exportacao', 1)", [adv.kayo])).erro !== null, "Advogado não forja exportação em nome de outro");
+ok((await como("caio", "INSERT INTO prosp_auditoria (acao, qtd_registros) VALUES ('busca', 1)")).erro !== null, "Advogado não forja registro de busca (só a Edge)");
+ok((await como("ana", "INSERT INTO prosp_auditoria (acao, qtd_registros) VALUES ('exportacao', 1)")).erro !== null, "Estagiária não registra exportação");
+ok((await como("kayo", "SELECT id FROM prosp_auditoria")).rows.length === 0 && (await como("fernanda", "SELECT id FROM prosp_auditoria")).rows.length === 1,
+  "Auditoria: sócia vê todas; outro advogado não vê a exportação do colega");
+const svc = await db.transaction(async (tx) => {
+  await tx.exec("SET LOCAL ROLE service_role");
+  await tx.exec("UPDATE prosp_processos SET situacao = 'qualificado' WHERE numero_cnj = '50000010020264047000'");
+  return (await tx.query("SELECT cnpj FROM prosp_cnpjs_para_enriquecer(10)")).rows.map((r) => r.cnpj);
+});
+ok(svc.includes("12345678000195") && !svc.includes("11222333000181") && !svc.includes("19131243000197"),
+  "service_role: fila de enriquecimento traz só CNPJ sem cache (nem o não encontrado, que fica 30 dias em cache)");
+ok(!svc.includes("45997418000153"), "service_role: MEI (CPF no nome) nem entra na fila de consulta de contato");
+// Reserva da fila (o que a Edge faz pelo PostgREST): só uma chamada fica com cada processo.
+const reservar = () => db.transaction(async (tx) => {
+  await tx.exec("SET LOCAL ROLE service_role");
+  return (await tx.query(`UPDATE prosp_processos SET proxima_tentativa_em = now() + interval '3 minutes'
+    WHERE numero_cnj = '50000010020264047000' AND proxima_tentativa_em <= now() RETURNING id`)).rows.length;
+});
+ok((await reservar()) === 1 && (await reservar()) === 0, "Fila: processo reservado por uma execução não é pego por outra simultânea");
+const carimbo = (await db.query("SELECT created_at < updated_at AS ok FROM prosp_processos WHERE numero_cnj = '50000010020264047000'")).rows[0];
+ok(carimbo?.ok === true, "service_role grava na fila e o gatilho de carimbo (SECURITY INVOKER) roda");
+
+console.log("\n8d. Compatibilidade com o bot DFU V2 depois da v11");
+const RPCS_BOT = ["dfu_receber(text,text,text,text,text)", "dfu_contexto(text)", "dfu_recuperar_pendentes(integer)",
+  "dfu_aplicar_ia(text,text,jsonb)", "dfu_retirar_saida(text,integer)", "dfu_marcar_saida(uuid,text,text)",
+  "dfu_verificar_saida(uuid)", "dfu_gerar_followups(boolean)", "dfu_ofertar(text)", "dfu_criar_ficha(text)", "dfu_confirmar(text,integer)"];
+const privRpc = (await db.query(`SELECT f, has_function_privilege('service_role', ('public.' || f)::regprocedure, 'EXECUTE') AS svc,
+    has_function_privilege('authenticated', ('public.' || f)::regprocedure, 'EXECUTE') AS auth,
+    has_function_privilege('anon', ('public.' || f)::regprocedure, 'EXECUTE') AS anon
+  FROM unnest($1::text[]) f`, [RPCS_BOT])).rows;
+ok(privRpc.length === RPCS_BOT.length && privRpc.every((r) => r.svc && !r.auth && !r.anon),
+  `RPCs do bot: só a service_role (n8n) executa (${privRpc.filter((r) => !r.svc || r.auth || r.anon).map((r) => r.f).join(", ") || "ok"})`);
+const TABELAS_BOT = ["conversas_memoria", "dfu_erros", "dfu_origens", "dfu_revisoes", "agenda_google_fila", "agenda_google_notificacoes"];
+const tabBot = (await db.query(`SELECT c.relname, c.relrowsecurity AS rls,
+    (SELECT count(*) FROM pg_policies p WHERE p.schemaname = 'public' AND p.tablename = c.relname)::int AS politicas,
+    has_table_privilege('anon', c.oid, 'SELECT') OR has_table_privilege('authenticated', c.oid, 'SELECT') AS publico,
+    has_table_privilege('service_role', c.oid, 'SELECT') AS svc
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = ANY($1)`, [TABELAS_BOT])).rows;
+ok(tabBot.length === TABELAS_BOT.length && tabBot.every((r) => r.rls && r.politicas === 0 && !r.publico && r.svc),
+  "Tabelas internas do bot: RLS sem política (nega tudo), sem privilégio para anon/authenticated, service_role mantém acesso");
+const objetosV11NoBot = (await db.query(`SELECT proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = 'public' AND (proname LIKE 'dfu\_%' AND prosrc ILIKE '%prosp\_%' OR proname LIKE 'prosp\_%' AND prosrc ILIKE '%dfu\_%')`)).rows;
+ok(objetosV11NoBot.length === 0, "Bot e prospecção não dependem um do outro (nenhuma função cruza dfu_* e prosp_*)");
+// Fluxo real do n8n como service_role, depois de todas as migrações (v11 inclusa).
+const fluxo = await db.transaction(async (tx) => {
+  await tx.exec("SET LOCAL ROLE service_role");
+  const q = async (sql, params = []) => (await tx.query(sql, params)).rows[0];
+  const tel = "5566999990000";
+  const r1 = await q("SELECT dfu_receber($1, 'wamid.teste.1', 'Olá', 'texto', 'Cliente Teste') AS r", [tel]);
+  const saida = await q("SELECT * FROM dfu_retirar_saida($1, 5)", [tel]);
+  const verif = await q("SELECT dfu_verificar_saida($1) AS r", [saida.id]);
+  const marcou = await q("SELECT dfu_marcar_saida($1, 'ENVIADO', 'wamid.saida.1') AS r", [saida.id]);
+  const memoria = await q("SELECT count(*)::int AS n FROM conversas_memoria WHERE telefone_cliente = $1", [tel]);
+  const r2 = await q("SELECT dfu_receber($1, 'wamid.teste.2', 'Recebi uma execução fiscal', 'texto', 'Cliente Teste') AS r", [tel]);
+  const ctx = await q("SELECT dfu_contexto($1) AS r", [tel]);
+  const ia = await q(`SELECT dfu_aplicar_ia($1, 'wamid.teste.2', '{"acao":"perguntar","area":"tributario","mensagem_ao_cliente":"Pode contar um pouco mais?"}'::jsonb) AS r`, [tel]);
+  const pend = await q("SELECT count(*)::int AS n FROM dfu_recuperar_pendentes(5)");
+  const fup = await q("SELECT dfu_gerar_followups(false) AS n");
+  return { r1: r1.r, saida, verif: verif.r, marcou: marcou.r, memoria: memoria.n, r2: r2.r, ctx: ctx.r, ia: ia.r, pend: pend.n, fup: fup.n };
+}).catch((e) => ({ erro: e.message }));
+ok(!fluxo.erro, `Fluxo do n8n roda inteiro como service_role${fluxo.erro ? " — " + fluxo.erro : ""}`);
+if (!fluxo.erro) {
+  ok(fluxo.r1?.motivo === "primeira_mensagem" && fluxo.saida?.tipo === "intro", "dfu_receber grava a 1ª mensagem e enfileira a apresentação");
+  ok(fluxo.verif?.permitir === true && fluxo.marcou === true && fluxo.memoria === 1, "dfu_retirar_saida → dfu_verificar_saida → dfu_marcar_saida gravam o envio e conversas_memoria");
+  ok(fluxo.r2?.processar_ia === true && fluxo.ctx?.processar_ia === true, "dfu_receber libera a IA e dfu_contexto devolve o histórico");
+  ok(fluxo.ia?.ok === true, `dfu_aplicar_ia aplica a resposta da IA${fluxo.ia?.ok === true ? "" : " — " + JSON.stringify(fluxo.ia)}`);
+  ok(fluxo.pend === 0 && fluxo.fup === 0, "dfu_recuperar_pendentes e dfu_gerar_followups (desligado) rodam sem efeito colateral");
+}
+
 console.log("\n9. Catálogo do banco");
 const semRls = (await db.query("SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity")).rows;
 ok(semRls.length === 0, `Todas as tabelas do public com RLS${semRls.length ? ": faltam " + semRls.map((r) => r.relname).join(", ") : ""}`);

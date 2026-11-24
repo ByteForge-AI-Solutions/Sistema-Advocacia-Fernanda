@@ -4,7 +4,7 @@
   "description": "Testes de invasão do RLS num Postgres real em memória (PGlite). Sem rede, sem credenciais.",
   "type": "module",
   "scripts": {
-    "test": "node testar_rls.mjs"
+    "test": "node --liftoff-only --single-threaded testar_rls.mjs"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.17"

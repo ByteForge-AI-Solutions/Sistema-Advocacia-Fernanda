@@ -8,18 +8,21 @@ import {
   ChartNoAxesColumn,
   Gavel,
   Inbox,
+  Landmark,
   LogOut,
   MessageCircle,
   Scale,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
-import { CARGO_LABEL, type Advogado } from "@/lib/advogados";
+import { CARGO_LABEL, type Advogado, type Cargo } from "@/lib/advogados";
 
 interface ItemMenu {
   href: string;
   label: string;
   icone: LucideIcon;
+  /** Se definido, o item só aparece para estes cargos (o servidor também nega aos demais). */
+  cargos?: Cargo[];
 }
 
 /** Menu em seções. Para adicionar uma página, inclua o item na seção adequada. */
@@ -45,11 +48,15 @@ const SECOES: { titulo: string; itens: ItemMenu[] }[] = [
     itens: [
       { href: "/painel/financeiro", label: "Financeiro", icone: Wallet },
       { href: "/painel/dashboard", label: "Indicadores", icone: ChartNoAxesColumn },
+      // v11: só sócios e advogados titulares (RLS e Edge Function conferem de novo).
+      { href: "/painel/prospeccao", label: "Prospecção (CNPJ)", icone: Landmark, cargos: ["socio", "advogado"] },
     ],
   },
 ];
 
-const ITENS: ItemMenu[] = SECOES.flatMap((s) => s.itens);
+function secoesDo(cargo: Cargo) {
+  return SECOES.map((s) => ({ ...s, itens: s.itens.filter((i) => !i.cargos || i.cargos.includes(cargo)) })).filter((s) => s.itens.length);
+}
 
 function iniciais(nome: string) {
   const partes = nome.trim().split(/\s+/);
@@ -63,6 +70,8 @@ function estaAtivo(pathname: string, href: string) {
 
 export function Sidebar({ perfil, onSair }: { perfil: Advogado; onSair: () => void }) {
   const pathname = usePathname();
+  const secoes = secoesDo(perfil.cargo);
+  const itens = secoes.flatMap((s) => s.itens);
 
   return (
     <>
@@ -81,7 +90,7 @@ export function Sidebar({ perfil, onSair }: { perfil: Advogado; onSair: () => vo
         )}
 
         <nav aria-label="Menu principal" className="flex-1 space-y-6 overflow-y-auto px-3 py-6">
-          {SECOES.map((secao) => (
+          {secoes.map((secao) => (
             <div key={secao.titulo}>
               <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-navy-400">{secao.titulo}</p>
               <div className="space-y-0.5">
@@ -152,7 +161,7 @@ export function Sidebar({ perfil, onSair }: { perfil: Advogado; onSair: () => vo
           </button>
         </div>
         <nav aria-label="Menu principal" className="flex gap-1 overflow-x-auto px-3 pb-2">
-          {ITENS.map(({ href, label, icone: Icone }) => {
+          {itens.map(({ href, label, icone: Icone }) => {
             const ativo = estaAtivo(pathname, href);
             return (
               <Link

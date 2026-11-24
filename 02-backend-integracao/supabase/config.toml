@@ -439,3 +439,9 @@ verify_jwt = false
 
 [functions.google-calendar-webhook]
 verify_jwt = false
+
+# Prospecção de execuções fiscais (v11): chamada pelo CRM com o JWT do usuário.
+# verify_jwt = true: o gateway recusa quem não está logado; o cargo (sócio/advogado) é
+# conferido de novo dentro da função. Secrets: DATAJUD_API_KEY e CRM_ORIGENS.
+[functions.prospeccao-execucoes]
+verify_jwt = true

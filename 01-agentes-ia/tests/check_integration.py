@@ -273,11 +273,63 @@ assert '<LogSeguro />' in (CLI/'src/app/layout.tsx').read_text(encoding='utf-8')
 # 10) Teste de invasão do RLS num Postgres real (PGlite), se as dependências estiverem instaladas.
 rls_dir=ROOT/'04-banco-dados/tests'
 if (rls_dir/'node_modules/@electric-sql/pglite').is_dir() and shutil.which('node'):
-    r=subprocess.run(['node','testar_rls.mjs'],cwd=rls_dir,capture_output=True,text=True,encoding='utf-8',timeout=600)
+    r=subprocess.run(['node','--liftoff-only','--single-threaded','testar_rls.mjs'],cwd=rls_dir,capture_output=True,text=True,encoding='utf-8',timeout=600)
     assert r.returncode==0, 'teste de RLS falhou:\n'+r.stdout[-2000:]+r.stderr[-1000:]
     rls_msg=r.stdout.strip().splitlines()[-1]
 else:
     rls_msg='teste de RLS (PGlite) não executado: rode "npm ci" em 04-banco-dados/tests'
+# ===================== v11: prospecção de execuções fiscais (CNPJ) =====================
+v11=(MIG/'20261123_v11_prospeccao_execucoes.sql').read_text(encoding='utf-8')
+assert re.search(r'BEGIN\s*;',v11) and v11.count('$$') % 2 == 0 and v11.rstrip().endswith('COMMIT;')
+v11_codigo=sem_comentarios(v11)
+assert 'DROP TABLE' not in v11_codigo.upper() and 'SECURITY DEFINER' not in v11_codigo, 'v11 não cria SECURITY DEFINER nem apaga tabela'
+for proibido in ('CREATE OR REPLACE FUNCTION public.pode_acessar_ficha', 'CREATE OR REPLACE FUNCTION public.dfu_',
+                 'CREATE OR REPLACE FUNCTION public.crm_', 'fichas_clientes'):
+    assert proibido not in v11_codigo, proibido
+for tabela in ('prosp_processos','prosp_cnpj_cache','prosp_pgfn_devedores','prosp_auditoria'):
+    assert re.search(rf'ALTER TABLE public\.{tabela}\s+ENABLE ROW LEVEL SECURITY', v11_codigo), f'RLS ausente em {tabela}'
+assert re.search(r'REVOKE ALL ON public\.prosp_processos, public\.prosp_cnpj_cache, public\.prosp_pgfn_devedores, public\.prosp_auditoria\s+FROM PUBLIC, anon, authenticated', v11_codigo)
+assert 'WITH (security_invoker = true)' in v11_codigo, 'view de prospecção precisa aplicar o RLS de quem consulta'
+assert v11_codigo.count("public.crm_cargo_atual()) IN ('advogado', 'socio')") >= 3, 'prospecção só para sócio e advogado'
+assert "cnpj ~ '^[0-9]{14}$'" in v11_codigo and 'valor_causa > 100000' in v11_codigo and "<> '2135'" in v11_codigo, 'só CNPJ (sem MEI) e > R$ 100 mil'
+assert re.search(r'GRANT INSERT \(acao, parametros, qtd_registros\) ON public\.prosp_auditoria TO authenticated', v11_codigo), 'auditoria: autoria não forjável'
+assert 'prosp_cnpjs_para_enriquecer(integer) FROM PUBLIC, anon, authenticated' in v11_codigo
+PE=FN/'prospeccao-execucoes'
+pe_idx,pe_fontes,pe_regras=((PE/n).read_text(encoding='utf-8') for n in ('index.ts','fontes.ts','regras.ts'))
+for nome,t in (('index.ts',pe_idx),('fontes.ts',pe_fontes),('regras.ts',pe_regras)):
+    assert 'console.' not in t, f'prospeccao-execucoes/{nome} não deve logar dados'
+    assert not re.search(r'APIKey\s+[A-Za-z0-9+/=]{20,}', t), f'chave do DataJud embutida em {nome}'
+assert 'env("DATAJUD_API_KEY")' in pe_idx and 'crm_cargo_atual' in pe_idx and 'validarPedido(corpo)' in pe_idx
+assert 'usuario.cargo !== "socio" && usuario.cargo !== "advogado"' in pe_idx, 'Edge precisa conferir o cargo no servidor'
+assert 'esperaDoLimite(usuario.id)' in pe_idx and 'CHAMADAS_POR_MINUTO = 6' in pe_idx and 'registrarFalha(ip)' in pe_idx, 'Edge sem limite de chamadas'
+assert 'redirect: "error"' in pe_fontes and 'HOSTS_PERMITIDOS.has(u.hostname)' in pe_fontes, 'chamadas externas sem allowlist (SSRF)'
+assert pe_fontes.count('fetch(') == 1, 'toda chamada externa deve passar por buscarSeguro()'
+# Chave do DataJud rotacionada/expirada (401/403): aviso claro com o comando de atualização.
+assert 'throw new ChaveRecusada("datajud")' in pe_fontes and '"datajud_chave_recusada"' in pe_idx
+assert 'supabase secrets set DATAJUD_API_KEY' in pe_idx and 'supabase functions deploy prospeccao-execucoes' in pe_idx
+# Fila sem perda: reserva antes da consulta, devolução no fim e fonte fora do ar sem gastar tentativa.
+assert 'proxima_tentativa_em=lte.${agora}' in pe_idx and 'devolverAFila([...naoTentados])' in pe_idx
+assert 'devolverAFila([p.id], REAGENDAR_FONTE_FORA_MS)' in pe_idx, 'fonte fora do ar não pode gastar tentativa'
+assert 'await aoReceber(novos)' in pe_fontes, 'DataJud precisa gravar página a página'
+# MEI/empresário individual fora (LGPD) na Edge, na view e na fila de contatos.
+assert 'pareceEmpresarioIndividual' in pe_regras and 'NATUREZA_EMPRESARIO_INDIVIDUAL' in pe_fontes
+assert v11_codigo.count("!~ '([0-9]{3}") == 2 and 'encontrado IS NOT FALSE' in v11_codigo and 'NOT EXISTS (SELECT 1 FROM public.prosp_processos p2' in v11_codigo
+cfg_supa=(ROOT/'02-backend-integracao/supabase/config.toml').read_text(encoding='utf-8')
+assert re.search(r'\[functions\.prospeccao-execucoes\]\s*\nverify_jwt = true', cfg_supa), 'prospeccao-execucoes precisa de JWT'
+if shutil.which('node'):
+    r=subprocess.run(['node','--test',str(PE/'regras.test.ts'),str(PE/'fontes.test.ts')],capture_output=True,text=True,encoding='utf-8',timeout=300)
+    assert r.returncode==0, 'testes da Edge de prospecção falharam:\n'+r.stdout[-2000:]+r.stderr[-1000:]
+prosp=(CLI/'src/lib/prospeccao.ts').read_text(encoding='utf-8')
+colunas=re.search(r'export const COLUNAS_CSV = \[(.*?)\] as const', prosp, re.S).group(1)
+assert re.findall(r'"([^"]+)"', colunas)==['CPF/CNPJ','nome','data da distribuição','polo ativo','número do processo',
+    'tribunal','valor da causa','classe','telefone','e-mail'], 'colunas do CSV diferentes das pedidas'
+assert 'neutralizarFormula' in prosp and r'/^[=+\-@\t\r]/' in prosp, 'CSV sem proteção contra injeção de fórmula'
+assert 'registrarExportacao' in prosp and 'functions.invoke("prospeccao-execucoes"' in prosp and 'prosp_oportunidades' in prosp
+assert 'class ErroProspeccao' in prosp and 'aguardeSegundos' in prosp, 'tela sem tratamento de limite/falha da Edge'
+assert not re.search(r'https://(api-publica\.datajud|comunicaapi|minhareceita|brasilapi|publica\.cnpj)', prosp), 'fonte externa chamada do navegador'
+assert '"/painel/prospeccao"' in (CLI/'src/components/painel/sidebar.tsx').read_text(encoding='utf-8')
+assert 'podeProspectar(perfil.cargo)' in (CLI/'src/app/painel/prospeccao/page.tsx').read_text(encoding='utf-8')
+
 # v3: o item virou "Atendimentos" (inbox bot + humano); o que importa é a rota no menu.
 assert '"/painel/atendimentos"' in (CLI/'src/components/painel/sidebar.tsx').read_text(encoding='utf-8')
 assert 'FilaFichas' in (CLI/'src/app/painel/page.tsx').read_text(encoding='utf-8'), 'Painel original de fichas deve ser preservado'
