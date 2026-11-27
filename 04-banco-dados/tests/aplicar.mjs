@@ -16,6 +16,7 @@ export const MIGRACOES = [
   "20261122_v9_security_hardening.sql",
   "20261122_v10_advisor_funcoes.sql",
   "20261123_v11_prospeccao_execucoes.sql",
+  "20261126_v12_ficha_manual.sql",
 ];
 
 export async function montarBanco(raizRepo, migracoes = MIGRACOES) {

@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { CalendarClock, CircleAlert, Inbox, ListFilter, LoaderCircle, RefreshCw, UsersRound, Workflow } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CalendarClock, CircleAlert, Inbox, ListFilter, LoaderCircle, Plus, RefreshCw, UsersRound, Workflow } from "lucide-react";
 import { TEMPERATURAS, TEMPERATURA_INFO, situacaoProximaAcao, type SituacaoAcao } from "@/lib/leads";
 import { buscarEquipeVisivel, ehSocio, ehTitular, rotuloMembro, type Advogado, type MembroEquipe } from "@/lib/advogados";
 import {
@@ -29,6 +29,9 @@ import {
 import { PRIORIDADE_ESTILO } from "@/components/fichas/badges";
 import { FichaCard } from "@/components/fichas/ficha-card";
 import { TarefasDoDia } from "@/components/fichas/tarefas-do-dia";
+import { NovoAtendimentoModal } from "@/components/fichas/novo-atendimento-modal";
+import { Toast } from "@/components/toast";
+import { podeCadastrarAtendimento } from "@/lib/atendimento-manual";
 
 type Filtro = "todos" | StatusAtendimento;
 /** Filtro do funil (migração v6): todas, só as ativas ou uma etapa. */
@@ -66,6 +69,10 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
   const [followup, setFollowup] = useState<DadosFollowup>(SEM_FOLLOWUP);
   // Momento da última carga: base estável para "vencida/hoje" durante a renderização.
   const [carregadoEm, setCarregadoEm] = useState<Date | null>(null);
+  // "+ Novo atendimento" (v12): cadastro manual pela RPC crm_ficha_criar_manual.
+  const [novoAberto, setNovoAberto] = useState(false);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const fecharAviso = useCallback(() => setAviso(null), []);
 
   useEffect(() => {
     let atual = true; // descarta respostas de requisições antigas
@@ -202,6 +209,18 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
 
   return (
     <div>
+      {podeCadastrarAtendimento(perfil.cargo) && (
+        <div className="mb-4 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setNovoAberto(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-navy-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-navy-800"
+          >
+            <Plus className="size-4" aria-hidden /> Novo atendimento
+          </button>
+        </div>
+      )}
+
       {/* Resumo da fila em aberto */}
       <section aria-label="Resumo da fila" className="grid gap-3 sm:grid-cols-3">
         {PRIORIDADES.map((p) => (
@@ -375,6 +394,17 @@ export function FilaFichas({ perfil }: { perfil: Advogado }) {
           </ul>
         )}
       </section>
+      {novoAberto && (
+        <NovoAtendimentoModal
+          onFechar={() => setNovoAberto(false)}
+          onCriado={() => {
+            setNovoAberto(false);
+            setAviso("Atendimento cadastrado. Ele aparece na fila com o primeiro contato para hoje.");
+            atualizar();
+          }}
+        />
+      )}
+      {aviso && <Toast mensagem={aviso} onFechar={fecharAviso} />}
     </div>
   );
 }

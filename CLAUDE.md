@@ -71,7 +71,7 @@ Regras de cor, conforme o documento "CRM de leads de anúncio", seção 4:
 - **Titular:** vê e edita as fichas dele e as dos estagiários que supervisiona, e pode delegar só para esses estagiários.
 - **Estagiário:** vê e edita só as dele e não consegue repassá-las.
 - **Fichas sem responsável** (`advogado_id` NULL): o titular vê as da área dele e o sócio vê todas, pela política `crm fichas sem responsavel`. Quem assume chama a RPC `crm_ficha_assumir`, que também atualiza `ultima_atribuicao`.
-- INSERT e DELETE são exclusivos da `service_role` (bot n8n).
+- INSERT e DELETE são exclusivos da `service_role` (bot n8n). A única exceção é o cadastro manual pela RPC `crm_ficha_criar_manual` (v12). Desde a v12, `authenticated` nem tem o privilégio de INSERT/DELETE (antes, só o RLS barrava).
 - **`advogados`:** desde a v8 não é mais legível por qualquer usuário logado. A política em vigor é "advogados: leitura restrita". A seção 5.3 do `schema.sql` mostra a política antiga.
 
 ### `conversas_memoria`
@@ -167,6 +167,21 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
      - **Acesso:** leitura só para `crm_cargo_atual() IN ('advogado', 'socio')`; estagiário, desenvolvedor e anon não veem nada. Escrita só da `service_role`; o CRM só insere `exportacao` na auditoria (autoria pelo JWT).
      - Sem função SECURITY DEFINER nova. `prosp_cnpjs_para_enriquecer` é só da `service_role`.
      - **Auditoria (24/11/2026):** a sequência `prosp_auditoria_id_seq` não tem privilégio para anon/authenticated, e `parametros` só aceita as chaves conhecidas (CHECK `prosp_auditoria_parametros_conhecidos`). Chave nova gravada pela Edge ou pelo CRM precisa entrar nessa lista.
+  12. `20261126_v12_ficha_manual.sql`: cadastro manual de atendimento ("+ Novo atendimento" na fila).
+     - RPC `crm_ficha_criar_manual(nome, telefone, área, resumo)`, SECURITY DEFINER:
+       - responsável = quem cadastra (JWT): estagiário cria a própria (o supervisor vê); a conta de desenvolvedor cria só ficha de teste, isolada;
+       - prioridade, status, etapa, temperatura e datas vêm dos padrões e do gatilho `crm_fichas_lead`;
+       - nasce com a próxima ação "Fazer o primeiro contato" para hoje;
+       - **não mexe no rodízio** (`ultima_atribuicao`).
+     - **Validação no servidor:**
+       - nome de 2 a 120 caracteres;
+       - telefone opcional, normalizado para 55 + DDD + número (vazio fica `''`);
+       - área entre as 6 canônicas;
+       - resumo de até 3.000 caracteres;
+       - sem CPF/CNPJ em nome ou resumo;
+       - no máximo 30 cadastros manuais por pessoa por hora.
+     - Coluna `fichas_clientes.origem_cadastro` (`'manual_crm'` ou NULL para o bot): só a RPC grava, fora do GRANT de UPDATE.
+     - `REVOKE INSERT, DELETE, TRUNCATE ON fichas_clientes FROM anon, authenticated`.
 - **Prospecção (v11), Edge Function `02-backend-integracao/supabase/functions/prospeccao-execucoes`:**
   - `verify_jwt = true`; o cargo é conferido de novo dentro dela (RPC `crm_cargo_atual` com o JWT do usuário). 6 chamadas por minuto por usuário (as recusadas não contam; o 429 traz `aguardeSegundos`).
   - Adapters em `fontes.ts` (interfaces `FonteProcessos`, `FontePartes`, `FonteContatoCnpj`): DataJud, DJEN, minhareceita.org → BrasilAPI → CNPJ.ws. Provedor pago futuro = adapter novo + host em `HOSTS_PERMITIDOS`.
@@ -187,14 +202,14 @@ Para diagnosticar divergências de estrutura sem a chave secreta: uma consulta R
   - Prazo das chamadas externas em **ms inteiros** (`tempoRestante`): `AbortSignal.timeout` com fração lança `RangeError`, e antes isso virava "sobrecarga" calada na busca com vários tribunais.
   - Secrets: `DATAJUD_API_KEY` e `CRM_ORIGENS` (CORS). Importador da PGFN: `02-backend-integracao/scripts/importar-pgfn.mjs` (roda local, com `service_role` só por variável de ambiente).
 - **Avisos do Security Advisor que são intencionais (não "corrigir"):**
-  - **0029 em RPCs e funções de autorização:** `pode_acessar_ficha`, `advogado_atual_id`, `crm_cargo_atual`, `crm_pode_*`, `crm_titular_da_area`, `crm_atendimento_*`, `crm_indicadores*`, `crm_ficha_assumir` e `dfu_assumir_atendimento`.
+  - **0029 em RPCs e funções de autorização:** `pode_acessar_ficha`, `advogado_atual_id`, `crm_cargo_atual`, `crm_pode_*`, `crm_titular_da_area`, `crm_atendimento_*`, `crm_indicadores*`, `crm_ficha_assumir`, `crm_ficha_criar_manual` (v12) e `dfu_assumir_atendimento`.
     - As RPCs validam o chamador por dentro.
     - As funções de autorização são chamadas pelas políticas RLS, que rodam com o papel do usuário: sem EXECUTE para authenticated, o RLS falha para todos.
     - O teste de RLS confere que a lista não cresce sem aprovação (`PERMITIDAS`).
   - **0008 (RLS sem política):** em `conversas_memoria`, `dfu_erros`, `dfu_origens`, `dfu_revisoes`, `agenda_google_fila` e `agenda_google_notificacoes`, a regra é negar tudo; só a `service_role` usa essas tabelas.
 - **Teste de invasão do RLS** (`04-banco-dados/tests`, PGlite = Postgres real em memória):
   - Para rodar: `npm ci && npm test` dentro da pasta. O script usa `--liftoff-only --single-threaded` porque, com pouca RAM livre, o PGlite não consegue alocar memória para o WebAssembly.
-  - Aplica `schema.sql` e todas as migrações e simula cada usuário (sócio, titular, estagiária, desenvolvedor e anon) com o JWT, como o PostgREST faz. São 120 verificações (38 da prospecção v11 e 9 de compatibilidade com o bot DFU V2, que roda o fluxo do n8n inteiro como `service_role`), incluindo as regras 0028/0029 do Security Advisor.
+  - Aplica `schema.sql` e todas as migrações e simula cada usuário (sócio, titular, estagiária, desenvolvedor e anon) com o JWT, como o PostgREST faz. São 144 verificações (38 da prospecção v11, 24 do cadastro manual v12 e 9 de compatibilidade com o bot DFU V2, que roda o fluxo do n8n inteiro como `service_role`), incluindo as regras 0028/0029 do Security Advisor.
   - **Migração nova:** inclua-a na lista `MIGRACOES` de `aplicar.mjs`.
   - O `check_integration.py` roda esse teste automaticamente quando `node_modules` existe.
 - **Segurança (skill `.claude/skills/appsec-juridico`):** siga as regras dela em todo código novo.
@@ -368,6 +383,7 @@ Organização:
 - `src/lib/cadastro.ts`, `src/lib/financeiro.ts`, `src/lib/repositorio.ts` + `src/components/clientes/*` (v7):
   - botão "Cliente e honorários" no cartão da ficha, que abre o `FichaClienteModal` com as abas Cadastro, Honorários e Documentos;
   - `registrar-pagamento-modal.tsx`, compartilhado com `src/app/painel/financeiro`.
+- `src/lib/atendimento-manual.ts` + `src/components/fichas/novo-atendimento-modal.tsx` (v12): botão "+ Novo atendimento" no topo da fila (`fila-fichas.tsx`; `app/painel/page.tsx` é protegido por hash e não muda). O CRM chama só a RPC e envia só os 4 campos; a validação espelha a do banco.
 - `src/components/fichas/`: `badges.tsx` (cores de prioridade e status e a etiqueta "Sob supervisão - Nome"), `ficha-card.tsx` e `fila-fichas.tsx` (filtros por status e resumo por prioridade).
 - `src/components/esqueci-senha-modal.tsx`: modal que chama `resetPasswordForEmail` com `redirectTo` apontando para `/redefinir-senha`.
 - `src/lib/agenda.ts`: interface `AgendaAdvogado` (espelho da tabela) e `EventoAgenda` (+ estagiário). `buscarAgenda(perfil)` aplica a regra titular/estagiário e ordena por `data_hora_inicio` crescente.

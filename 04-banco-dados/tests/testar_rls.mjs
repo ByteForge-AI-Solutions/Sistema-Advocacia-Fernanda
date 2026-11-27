@@ -312,6 +312,59 @@ if (!fluxo.erro) {
   ok(fluxo.pend === 0 && fluxo.fup === 0, "dfu_recuperar_pendentes e dfu_gerar_followups (desligado) rodam sem efeito colateral");
 }
 
+console.log("\n8e. Cadastro manual de atendimento (v12): RPC única, responsável = quem cadastra");
+const criar = (quem, nome, tel, area, resumo) => como(quem, "SELECT crm_ficha_criar_manual($1, $2, $3, $4) AS id", [nome, tel, area, resumo]);
+const rodizioAntes = (await db.query(`SELECT ultima_atribuicao FROM advogados WHERE id = '${adv.caio}'`)).rows[0].ultima_atribuicao;
+const mCaio = await criar("caio", "  Cliente   Balcão  ", "(66) 99999-1234", "tributario", "Recebeu notificação da Receita.");
+ok(mCaio.erro === null && mCaio.rows[0]?.id, `Advogado cadastra atendimento manual${mCaio.erro ? " — " + mCaio.erro : ""}`);
+const fCaio = (await db.query(`SELECT * FROM fichas_clientes WHERE id = '${mCaio.rows[0]?.id}'`)).rows[0] ?? {};
+ok(fCaio.advogado_id === adv.caio && fCaio.nome_cliente === "Cliente Balcão" && fCaio.telefone === "5566999991234",
+  "Responsável = quem cadastrou; nome e telefone normalizados (55 + DDD + número)");
+ok(fCaio.prioridade === "media" && fCaio.status_atendimento === "novo" && fCaio.etapa_funil === "novo_lead" && fCaio.origem_cadastro === "manual_crm",
+  "Prioridade, status e etapa vêm dos padrões e do gatilho do banco (não do navegador)");
+ok(fCaio.proxima_acao === "Fazer o primeiro contato" && fCaio.proxima_acao_em !== null, "Regra de ouro: já nasce com próxima ação para hoje");
+ok(String((await db.query(`SELECT ultima_atribuicao FROM advogados WHERE id = '${adv.caio}'`)).rows[0].ultima_atribuicao) === String(rodizioAntes),
+  "Rodízio do bot intacto (ultima_atribuicao não muda no cadastro manual)");
+ok(ids(await como("caio", "SELECT id FROM fichas_clientes")).has(fCaio.id), "Quem cadastrou vê a ficha na fila");
+const semTel = await criar("caio", "Cliente Sem Telefone", "", "civil", "");
+ok(semTel.erro === null, `Telefone e resumo são opcionais${semTel.erro ? " — " + semTel.erro : ""}`);
+const mAna = await criar("ana", "Cliente da Estagiária", "6633334444", "trabalhista", "Indicação.");
+ok(mAna.erro === null, `Estagiária cadastra atendimento${mAna.erro ? " — " + mAna.erro : ""}`);
+ok(ids(await como("fernanda", "SELECT id FROM fichas_clientes")).has(mAna.rows[0]?.id) && !ids(await como("caio", "SELECT id FROM fichas_clientes")).has(mAna.rows[0]?.id),
+  "Ficha da estagiária: a supervisora vê; outro advogado não");
+const mDev = await criar("dev", "Cliente Teste Dev", "", "civil", "Teste.");
+ok(mDev.erro === null && (await db.query(`SELECT advogado_id FROM fichas_clientes WHERE id = '${mDev.rows[0]?.id}'`)).rows[0]?.advogado_id === adv.dev,
+  "Desenvolvedor só cria ficha de teste atribuída a ele");
+ok(!ids(await como("fernanda", "SELECT id FROM fichas_clientes")).has(mDev.rows[0]?.id), "Isolamento: a sócia não vê a ficha de teste do desenvolvedor");
+ok(/permission denied/i.test((await criar("anon", "X Y", "", "civil", "")).erro ?? ""), "anon não executa a RPC de cadastro");
+for (const [args, desc] of [
+  [["", "", "civil", ""], "nome vazio"],
+  [["A", "", "civil", ""], "nome curto demais"],
+  [["Fulano 529.982.247-25", "", "civil", ""], "CPF no nome"],
+  [["Fulano", "", "civil", "Empresa 11.222.333/0001-81 deve"], "CNPJ no resumo"],
+  [["Fulano", "123", "civil", ""], "telefone inválido"],
+  [["Fulano", "", "penal", ""], "área fora das 6 canônicas"],
+  [["Fulano", "", "civil", "x".repeat(3001)], "resumo longo demais"],
+]) {
+  ok((await criar("caio", ...args)).erro !== null, `RPC recusa ${desc}`);
+}
+// Com a próxima ação preenchida, para o gatilho da regra de ouro não mascarar o teste.
+ok(/permission denied/i.test((await como("caio", "INSERT INTO fichas_clientes (nome_cliente, telefone, area_identificada, resumo_fatos, advogado_id, proxima_acao, proxima_acao_em) VALUES ('x', '', 'civil', 'x', $1, 'y', now())", [adv.caio])).erro ?? ""),
+  "INSERT direto em fichas_clientes: authenticated sem o privilégio (não só barrado pelo RLS)");
+ok(/permission denied/i.test((await como("fernanda", "DELETE FROM fichas_clientes WHERE id = $1", [fCaio.id])).erro ?? ""),
+  "DELETE direto em fichas_clientes: nem a sócia tem o privilégio (só service_role)");
+ok(/permission denied/i.test((await como("caio", "UPDATE fichas_clientes SET origem_cadastro = NULL WHERE id = $1", [fCaio.id])).erro ?? ""),
+  "origem_cadastro não é editável pelo CRM (fora do GRANT de UPDATE da v9)");
+await db.exec(`UPDATE advogados SET ativo = false WHERE id = '${adv.guilherme}'`);
+ok((await criar("guilherme", "Cliente X", "", "civil", "")).erro !== null, "Usuário inativo não cadastra");
+await db.exec(`UPDATE advogados SET ativo = true WHERE id = '${adv.guilherme}'`);
+const limite = await db.transaction(async (tx) => {
+  await tx.exec(`INSERT INTO fichas_clientes (nome_cliente, telefone, area_identificada, resumo_fatos, advogado_id, origem_cadastro)
+    SELECT 'Lote ' || g, '', 'civil', 'x', '${adv.karolina}', 'manual_crm' FROM generate_series(1, 30) g`);
+  return true;
+});
+ok(limite && /limite/i.test((await criar("karolina", "Cliente 31", "", "civil", "")).erro ?? ""), "Anti-abuso: 31º cadastro manual na mesma hora é recusado");
+
 console.log("\n9. Catálogo do banco");
 const semRls = (await db.query("SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity")).rows;
 ok(semRls.length === 0, `Todas as tabelas do public com RLS${semRls.length ? ": faltam " + semRls.map((r) => r.relname).join(", ") : ""}`);
@@ -327,7 +380,7 @@ ok(gatilhoAuth.length === 0, `Nenhuma função de gatilho SECURITY DEFINER expos
 const PERMITIDAS = new Set(["pode_acessar_ficha", "advogado_atual_id", "crm_cargo_atual", "crm_pode_acessar_ficha_id", "crm_pode_excluir",
   "crm_pode_acessar_objeto", "crm_titular_da_area", "crm_pode_acessar_atendimento", "crm_atendimento_assumir", "crm_atendimento_responder",
   "crm_atendimento_transferir", "crm_atendimento_devolver_bot", "crm_atendimento_encerrar", "crm_atendimento_etiquetas", "crm_indicadores",
-  "crm_indicadores_funil", "crm_ficha_assumir", "dfu_assumir_atendimento"]);
+  "crm_indicadores_funil", "crm_ficha_assumir", "dfu_assumir_atendimento", "crm_ficha_criar_manual"]);
 const authExec = (await db.query("SELECT proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.prosecdef AND has_function_privilege('authenticated', p.oid, 'EXECUTE')")).rows.map((r) => r.proname);
 const inesperadas = authExec.filter((n) => !PERMITIDAS.has(n));
 ok(inesperadas.length === 0, `Funções SECURITY DEFINER para authenticated = só a lista aprovada (${authExec.length})${inesperadas.length ? ": inesperadas " + inesperadas.join(", ") : ""}`);

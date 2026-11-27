@@ -287,7 +287,7 @@ export function FichaCard({
           </span>
           <span className="inline-flex items-center gap-1.5">
             <Phone className="size-3.5" aria-hidden />
-            {formatarTelefone(ficha.telefone)}
+            {ficha.telefone.replace(/\D/g, "") ? formatarTelefone(ficha.telefone) : "Telefone não informado"}
           </span>
           {ficha.qtd_documentos > 0 && (
             <span className="inline-flex items-center gap-1.5">

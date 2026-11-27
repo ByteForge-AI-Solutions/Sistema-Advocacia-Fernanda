@@ -343,6 +343,26 @@ assert not re.search(r'https://(api-publica\.datajud|comunicaapi|minhareceita|br
 assert '"/painel/prospeccao"' in (CLI/'src/components/painel/sidebar.tsx').read_text(encoding='utf-8')
 assert 'podeProspectar(perfil.cargo)' in (CLI/'src/app/painel/prospeccao/page.tsx').read_text(encoding='utf-8')
 
+# ===================== v12: cadastro manual de atendimento ("+ Novo atendimento") =====================
+v12=(MIG/'20261126_v12_ficha_manual.sql').read_text(encoding='utf-8')
+assert re.search(r'BEGIN\s*;',v12) and v12.count('$$') % 2 == 0 and v12.rstrip().endswith('COMMIT;')
+v12_codigo=sem_comentarios(v12)
+assert 'DROP TABLE' not in v12_codigo.upper() and 'CREATE POLICY' not in v12_codigo, 'v12 não cria política nem apaga tabela'
+for proibido in ('CREATE OR REPLACE FUNCTION public.pode_acessar_ficha', 'CREATE OR REPLACE FUNCTION public.dfu_',
+                 'ultima_atribuicao', 'GRANT INSERT', 'GRANT UPDATE'):
+    assert proibido not in v12_codigo, f'v12: {proibido}'
+rpc12=v12_codigo.split('CREATE OR REPLACE FUNCTION public.crm_ficha_criar_manual(')[1].split('$$;')[0]
+assert "SECURITY DEFINER SET search_path = ''" in rpc12 and 'v_eu uuid := public.advogado_atual_id()' in rpc12
+assert 'v_eu, ' in rpc12.split('VALUES')[1], 'responsável da ficha manual tem de ser quem cadastra (JWT)'
+assert "v_cargo NOT IN ('advogado', 'socio', 'estagiario', 'desenvolvedor')" in rpc12
+assert 'REVOKE INSERT, DELETE, TRUNCATE ON public.fichas_clientes FROM anon, authenticated' in v12_codigo
+man=(CLI/'src/lib/atendimento-manual.ts').read_text(encoding='utf-8')
+assert 'rpc("crm_ficha_criar_manual"' in man and 'contemDocumentoPessoal' in man
+assert not re.search(r'p_(advogado|prioridade|status|etapa|temperatura|origem|proxima)', man), 'CRM não envia campo protegido'
+for f in (CLI/'src').rglob('*.ts*'):
+    assert not re.search(r'from\("fichas_clientes"\)\s*\.(insert|upsert|delete)', f.read_text(encoding='utf-8')), f'INSERT/DELETE direto em fichas_clientes em {f.name}'
+assert 'NovoAtendimentoModal' in (CLI/'src/components/fichas/fila-fichas.tsx').read_text(encoding='utf-8')
+
 # v3: o item virou "Atendimentos" (inbox bot + humano); o que importa é a rota no menu.
 assert '"/painel/atendimentos"' in (CLI/'src/components/painel/sidebar.tsx').read_text(encoding='utf-8')
 assert 'FilaFichas' in (CLI/'src/app/painel/page.tsx').read_text(encoding='utf-8'), 'Painel original de fichas deve ser preservado'
